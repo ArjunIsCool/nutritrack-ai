@@ -17,7 +17,7 @@ npm install
 npm run dev
 ```
 
-Open the local URL printed by Vite. On first launch, complete the quick profile setup, then open **Settings** to paste your Gemini API key and test the connection.
+Open the local URL printed by Vite. On first launch, complete the quick profile setup. Managed AI requests require a deployed Cloudflare Worker with Firebase, Gemini and D1 bindings configured.
 
 ## Build
 
@@ -30,7 +30,8 @@ Build with `npm run build`. The Cloudflare Workers deployment is configured in `
 
 ## Important security and data notes
 - Gemini requests are sent through the Cloudflare Worker. Configure `GEMINI_API_KEY` as a Worker Secret and `FIREBASE_PROJECT_ID` as a Worker variable; never put server secrets in `VITE_*` variables.
-- The current Worker verifies Firebase ID tokens but does not yet implement subscription entitlements, per-user usage quotas, or robust abuse/rate limits. Do not launch paid access until those controls and payment verification are implemented.
+- The Worker verifies Firebase ID tokens and enforces an initial allowance of 10 AI analyses per user per UTC day and 100 per UTC month, plus request throttling. These controls require the Cloudflare D1 binding and migration described in [docs/FIREBASE_SETUP.md](docs/FIREBASE_SETUP.md).
+- Subscription entitlements, payment verification, Firebase token-revocation checks and broader abuse monitoring are not implemented. Do not launch paid access until these controls are added.
 - Meal prompts are forwarded to Google's Gemini API when you request analysis. Saved meals and profile data remain in this browser unless you sign in and enable cloud sync.
 - Use **Settings → Export backup** to download a JSON backup. Importing a backup replaces the current profile, meal history and weight history.
 - Clearing browser data, using a different browser or changing devices can make local records unavailable. Keep backups.
