@@ -84,7 +84,22 @@ function App(){
         if (cloud.weights) setWeights(cloud.weights);
         setMeals(cloud.meals);
       } else {
-        await saveCloudData(authUser.uid, { profile, weights, meals });
+        // One-time migration for existing local-only users. After this upload,
+        // Firestore becomes the source of truth and local persistence is disabled.
+        const legacyProfile = read('nt_profile', null);
+        const legacyMeals = read('nt_meals', null);
+        const legacyWeights = read('nt_weights', null);
+        const migratedProfile = legacyProfile || profile;
+        const migratedMeals = Array.isArray(legacyMeals) ? legacyMeals : meals;
+        const migratedWeights = Array.isArray(legacyWeights) ? legacyWeights : weights;
+        if (legacyProfile) setProfile(legacyProfile);
+        if (Array.isArray(legacyMeals)) setMeals(legacyMeals);
+        if (Array.isArray(legacyWeights)) setWeights(legacyWeights);
+        await saveCloudData(authUser.uid, { profile: migratedProfile, meals: migratedMeals, weights: migratedWeights });
+        localStorage.removeItem('nt_profile');
+        localStorage.removeItem('nt_meals');
+        localStorage.removeItem('nt_weights');
+        localStorage.removeItem('nt_setup_done');
       }
       if (active) { setCloudReady(true); setSyncStatus('synced'); }
     }).catch((error) => {
