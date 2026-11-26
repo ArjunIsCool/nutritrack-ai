@@ -10,6 +10,7 @@ const MONTHLY_LIMIT = 500;
 const MINUTE_LIMIT = 6;
 const MIN_REQUEST_INTERVAL_MS = 5000;
 const MINUTE_WINDOW_MS = 60_000;
+const DEMO_LIMIT = 5;
 
 const json = (data, status = 200) => new Response(JSON.stringify(data), {
   status,
@@ -52,6 +53,63 @@ async function getUsage(db, userId, now = Date.now()) {
     daily: { used: dailyUsed, limit: DAILY_LIMIT, remaining: Math.max(0, DAILY_LIMIT - dailyUsed), resetsAt: new Date(Date.now() + (Date.parse(dayKey + "T00:00:00Z") + 86_400_000 - Date.now())).toISOString() },
     monthly: { used: monthlyUsed, limit: MONTHLY_LIMIT, remaining: Math.max(0, MONTHLY_LIMIT - monthlyUsed), resetsAt: new Date(Date.UTC(Number(monthKey.slice(0, 4)), Number(monthKey.slice(5, 7)), 1)).toISOString() },
   };
+}
+
+async function getAccess(db, userId, now = Date.now()) {
+  await db.prepare("INSERT OR IGNORE INTO user_entitlements (user_id, status, updated_at) VALUES (?, 'demo', ?)").bind(userId, now).run();
+  const row = await db.prepare("SELECT status, trial_started_at, trial_ends_at, paid_until, plan_code, cancel_at_period_end FROM user_entitlements WHERE user_id = ?").bind(userId).first();
+  let status = row?.status || "demo";
+  if (status === "trialing" && Number(row.trial_ends_at || 0) <= now) status = "expired";
+  if (status === "active" && row.paid_until && Number(row.paid_until) <= now) status = "expired";
+  return {
+    status,
+    trialStartedAt: row?.trial_started_at || null,
+    trialEndsAt: row?.trial_ends_at || null,
+    paidUntil: row?.paid_until || null,
+    planCode: row?.plan_code || null,
+    cancelAtPeriodEnd: Boolean(row?.cancel_at_period_end),
+    demoLimit: DEMO_LIMIT,
+  };
+}
+
+async function getDemoUsage(db, userId) {
+  const row = await db.prepare("SELECT demo_count FROM demo_usage WHERE user_id = ?").bind(userId).first();
+  const used = row?.demo_count || 0;
+  return { used, limit: DEMO_LIMIT, remaining: Math.max(0, DEMO_LIMIT - used) };
+}
+
+async function reserveDemo(db, userId, now = Date.now()) {
+  const minuteStart = now;
+  const result = await db.prepare(`
+    INSERT INTO demo_usage (user_id, demo_count, minute_window_start, minute_count, last_request_at, updated_at)
+    VALUES (?, 1, ?, 1, ?, ?)
+    ON CONFLICT(user_id) DO UPDATE SET
+      demo_count = demo_usage.demo_count + 1,
+      minute_count = CASE WHEN ? - demo_usage.minute_window_start >= 60000 THEN 1 ELSE demo_usage.minute_count + 1 END,
+      minute_window_start = CASE WHEN ? - demo_usage.minute_window_start >= 60000 THEN ? ELSE demo_usage.minute_window_start END,
+      last_request_at = excluded.last_request_at,
+      updated_at = excluded.updated_at
+    WHERE demo_usage.demo_count < ?
+      AND (demo_usage.last_request_at IS NULL OR ? - demo_usage.last_request_at >= ?)
+      AND (demo_usage.minute_window_start IS NULL OR ? - demo_usage.minute_window_start >= 60000 OR demo_usage.minute_count < ?)
+  `).bind(userId, minuteStart, now, now, now, now, now, DEMO_LIMIT, now, MIN_REQUEST_INTERVAL_MS, now, MINUTE_LIMIT).run();
+  const usage = await getDemoUsage(db, userId);
+  if (result.meta?.changes > 0) return { allowed: true, usage };
+  const row = await db.prepare("SELECT minute_window_start, minute_count, last_request_at FROM demo_usage WHERE user_id = ?").bind(userId).first();
+  if (usage.remaining <= 0) return { allowed: false, status: 429, code: "DEMO_EXHAUSTED", error: "You've used all five demo analyses. Start a trial to continue.", usage };
+  const cooldown = row?.last_request_at ? Math.max(0, MIN_REQUEST_INTERVAL_MS - (now - row.last_request_at)) : 0;
+  const minuteWait = row?.minute_window_start && row.minute_count >= MINUTE_LIMIT ? Math.max(0, 60000 - (now - row.minute_window_start)) : 0;
+  return { allowed: false, status: 429, code: "RATE_LIMITED", error: "Please wait before trying another demo analysis.", retryAfter: Math.max(1, Math.ceil(Math.max(cooldown, minuteWait) / 1000)), usage };
+}
+
+async function refundDemo(db, userId) {
+  await db.prepare("UPDATE demo_usage SET demo_count = MAX(0, demo_count - 1), updated_at = ? WHERE user_id = ?").bind(Date.now(), userId).run();
+}
+
+async function hasPremiumAccess(db, userId, now = Date.now()) {
+  const access = await getAccess(db, userId, now);
+  return access.status === "trialing" && Number(access.trialEndsAt) > now
+    || access.status === "active" && (!access.paidUntil || Number(access.paidUntil) > now);
 }
 
 async function refundAnalysis(db, userId, reservedAt = Date.now()) {
@@ -161,7 +219,7 @@ export default {
     const url = new URL(request.url);
     if (!url.pathname.startsWith("/api/")) return env.ASSETS.fetch(request);
 
-    const allowedPaths = ["/api/meal-analysis", "/api/ai-status", "/api/usage"];
+    const allowedPaths = ["/api/meal-analysis", "/api/demo-analysis", "/api/ai-status", "/api/usage", "/api/access"];
     if (request.method !== "POST" || !allowedPaths.includes(url.pathname)) {
       return json({ error: "Not found." }, 404);
     }
@@ -181,7 +239,7 @@ export default {
       return json({ error: "Please sign in again before using AI meal analysis." }, 401);
     }
 
-    if (url.pathname === "/api/usage") {
+    if (url.pathname === "/api/access") {\n      try {\n        const [access, demoUsage] = await Promise.all([getAccess(env.DB, userId), getDemoUsage(env.DB, userId)]);\n        return json({ ok: true, access, demoUsage });\n      } catch { return json({ error: "Could not load account access right now." }, 503); }\n    }\n\n    if (url.pathname === "/api/usage") {
       try {
         return json({ ok: true, usage: await getUsage(env.DB, userId) });
       } catch {
