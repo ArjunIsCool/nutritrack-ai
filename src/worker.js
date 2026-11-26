@@ -226,8 +226,8 @@ export default {
 
     const missingConfig = [];
     if (!env.FIREBASE_PROJECT_ID) missingConfig.push("FIREBASE_PROJECT_ID");
-    if (!env.GEMINI_API_KEY) missingConfig.push("GEMINI_API_KEY");
-    if (url.pathname !== "/api/ai-status" && !env.DB) missingConfig.push("DB");
+    if (["/api/meal-analysis", "/api/demo-analysis", "/api/ai-status"].includes(url.pathname) && !env.GEMINI_API_KEY) missingConfig.push("GEMINI_API_KEY");
+    if (!env.DB) missingConfig.push("DB");
     if (missingConfig.length) {
       return json({ error: "AI service is not configured yet.", missing: missingConfig }, 503);
     }
@@ -268,6 +268,7 @@ export default {
       : "gemini-3.5-flash-lite";
 
     if (url.pathname === "/api/ai-status") {
+      if (!await hasPremiumAccess(env.DB, userId)) return json({ error: "AI service testing is available during a trial or paid subscription." }, 402);
       const result = await callGemini(env, model, "Reply with exactly: NutriTrack AI connection successful.", true);
       return result.error ? json({ error: result.error }, result.status) : json({ ok: true });
     }
