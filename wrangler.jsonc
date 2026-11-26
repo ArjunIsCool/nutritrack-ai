@@ -1,0 +1,35 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "nutritrack-ai",
+  "main": "src/worker.js",
+  "compatibility_date": "2026-11-26",
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": [
+      "/api/*"
+    ]
+  },
+  "preview_urls": true,
+  "previews": {
+    "vars": {
+      "FIREBASE_PROJECT_ID": "nutritrack-ai-6337e"
+    },
+    "d1_databases": [
+      {
+        "binding": "DB",
+        "database_name": "nutritrack-ai-usage",
+        "database_id": "74007f8b-3706-4bb8-993e-677db7956ff9"
+      }
+    ]
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "nutritrack-ai-usage",
+      "database_id": "74007f8b-3706-4bb8-993e-677db7956ff9",
+      "migrations_dir": "migrations"
+    }
+  ]
+}
