@@ -239,7 +239,14 @@ export default {
       return json({ error: "Please sign in again before using AI meal analysis." }, 401);
     }
 
-    if (url.pathname === "/api/access") {\n      try {\n        const [access, demoUsage] = await Promise.all([getAccess(env.DB, userId), getDemoUsage(env.DB, userId)]);\n        return json({ ok: true, access, demoUsage });\n      } catch { return json({ error: "Could not load account access right now." }, 503); }\n    }\n\n    if (url.pathname === "/api/usage") {
+    if (url.pathname === "/api/access") {
+      try {
+        const [access, demoUsage] = await Promise.all([getAccess(env.DB, userId), getDemoUsage(env.DB, userId)]);
+        return json({ ok: true, access, demoUsage });
+      } catch { return json({ error: "Could not load account access right now." }, 503); }
+    }
+
+    if (url.pathname === "/api/usage") {
       try {
         return json({ ok: true, usage: await getUsage(env.DB, userId) });
       } catch {
