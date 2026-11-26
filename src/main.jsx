@@ -51,7 +51,9 @@ function App(){
   const [syncStatus,setSyncStatus] = useState('local');
   const [authError,setAuthError] = useState('');
   const [aiUsage,setAiUsage] = useState(null);
-  const [usageLoading,setUsageLoading] = useState(false);\n  const [access,setAccess] = useState(null);\n  const [demoUsage,setDemoUsage] = useState(null);
+  const [usageLoading,setUsageLoading] = useState(false);
+  const [access,setAccess] = useState(null);
+  const [demoUsage,setDemoUsage] = useState(null);
   const targets = useMemo(()=>calcTargets(profile),[profile]);
   const todayMeals = meals.filter(m=>m.date===today());
   const totals = todayMeals.reduce((a,m)=>({calories:a.calories+(+m.calories||0),protein:a.protein+(+m.protein||0),carbs:a.carbs+(+m.carbs||0),fat:a.fat+(+m.fat||0),fiber:a.fiber+(+m.fiber||0)}),{calories:0,protein:0,carbs:0,fat:0,fiber:0});
@@ -181,9 +183,12 @@ function App(){
     setBusy(true);setError('');setDraft(null);
     try{
       const token=await authUser.getIdToken();
-      const demoMode = access?.status !== 'trialing' && access?.status !== 'active';\n      const endpoint = demoMode ? '/api/demo-analysis' : '/api/meal-analysis';\n      const res=await fetch(endpoint,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${token}`},body:JSON.stringify({prompt,category,model})});
+      const demoMode = access?.status !== 'trialing' && access?.status !== 'active';
+      const endpoint = demoMode ? '/api/demo-analysis' : '/api/meal-analysis';
+      const res=await fetch(endpoint,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${token}`},body:JSON.stringify({prompt,category,model})});
       const data=await res.json();
-      if (data?.usage) setAiUsage(data.usage);\n      if (data?.demoUsage) setDemoUsage(data.demoUsage);
+      if (data?.usage) setAiUsage(data.usage);
+      if (data?.demoUsage) setDemoUsage(data.demoUsage);
       if(!res.ok) {
         const retry = data?.retryAfter ? ` Try again in about ${data.retryAfter} seconds.` : '';
         throw new Error((data?.error||`Meal analysis failed (${res.status})`) + retry);
