@@ -42,7 +42,7 @@ The Worker uses Firebase's public signing keys to verify ID tokens and checks th
 
 ## 7. AI usage controls (Cloudflare D1)
 
-The Worker now enforces server-side AI analysis limits. The initial limits are 10 analyses per user per UTC day and 100 per user per UTC calendar month, with a maximum of 6 requests per rolling minute window and a minimum 5-second interval between requests. A submitted analysis attempt reserves quota before calling Gemini, including attempts where Gemini subsequently returns an error. The usage counters are keyed by the authenticated Firebase UID; they are not client-editable.
+The Worker now enforces server-side AI analysis limits. The initial limits are 20 analyses per user per UTC day and 500 per user per UTC calendar month, with a maximum of 6 requests per rolling minute window and a minimum 5-second interval between requests. A submitted analysis attempt reserves quota before calling Gemini, including attempts where Gemini subsequently returns an error. The usage counters are keyed by the authenticated Firebase UID; they are not client-editable.
 
 Create a D1 database and apply the migration:
 
