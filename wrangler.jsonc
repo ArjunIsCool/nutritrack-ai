@@ -21,7 +21,7 @@
     {
       "binding": "DB",
       "database_name": "nutritrack-ai-usage",
-      "database_id": "REPLACE_WITH_D1_DATABASE_ID",
+      "database_id": "74007f8b-3706-4bb8-993e-677db7956ff9",
       "migrations_dir": "migrations"
     }
   ]
