@@ -95,14 +95,20 @@ async function reserveAnalysis(db, userId, now = Date.now()) {
     return { allowed: false, status: 429, error: "You've reached this month's AI analysis limit.", code: "MONTHLY_LIMIT", retryAfter: 0, usage: await getUsage(db, userId, now) };
   }
 
-  const cooldown = row?.last_request_at ? Math.max(1, Math.ceil((MIN_REQUEST_INTERVAL_MS - (now - row.last_request_at)) / 1000)) : 1;
-  const minuteWait = row?.minute_window_start ? Math.max(1, Math.ceil((MINUTE_WINDOW_MS - (now - row.minute_window_start)) / 1000)) : 1;
+  const cooldownRemaining = row?.last_request_at
+    ? MIN_REQUEST_INTERVAL_MS - (now - row.last_request_at)
+    : 0;
+  const minuteRemaining = row?.minute_window_start
+    ? MINUTE_WINDOW_MS - (now - row.minute_window_start)
+    : 0;
+  const minuteLimitReached = minuteRemaining > 0 && (row?.minute_count || 0) >= MINUTE_LIMIT;
+  const retryAfter = Math.max(1, Math.ceil((minuteLimitReached ? minuteRemaining : cooldownRemaining) / 1000));
   return {
     allowed: false,
     status: 429,
     error: "You're sending requests too quickly. Please wait a moment and try again.",
     code: "RATE_LIMITED",
-    retryAfter: Math.min(cooldown, minuteWait),
+    retryAfter,
     usage: await getUsage(db, userId, now),
   };
 }
