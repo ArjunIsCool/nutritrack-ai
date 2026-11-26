@@ -54,6 +54,21 @@ async function getUsage(db, userId, now = Date.now()) {
   };
 }
 
+async function refundAnalysis(db, userId, reservedAt = Date.now()) {
+  const dayKey = new Date(reservedAt).toISOString().slice(0, 10);
+  const monthKey = dayKey.slice(0, 7);
+  // Refund quota for unsuccessful analyses, but retain request-throttling
+  // counters so repeated failures cannot be used to bypass rate limits.
+  await db.prepare(`
+    UPDATE ai_usage
+    SET
+      daily_count = CASE WHEN day_key = ? AND daily_count > 0 THEN daily_count - 1 ELSE daily_count END,
+      monthly_count = CASE WHEN month_key = ? AND monthly_count > 0 THEN monthly_count - 1 ELSE monthly_count END,
+      updated_at = ?
+    WHERE user_id = ?
+  `).bind(dayKey, monthKey, Date.now(), userId).run();
+}
+
 async function reserveAnalysis(db, userId, now = Date.now()) {
   const dayKey = new Date(now).toISOString().slice(0, 10);
   const monthKey = dayKey.slice(0, 7);
@@ -215,7 +230,13 @@ export default {
 
     const result = await callGemini(env, model, makeMealPrompt(prompt, category));
     if (result.error) {
-      return json({ error: result.error, usage: reservation.usage }, result.status);
+      try {
+        await refundAnalysis(env.DB, userId);
+        const usage = await getUsage(env.DB, userId);
+        return json({ error: result.error, usage }, result.status);
+      } catch {
+        return json({ error: result.error, usage: reservation.usage }, result.status);
+      }
     }
     return json({ text: result.text, usage: reservation.usage });
   },
