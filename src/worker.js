@@ -75,8 +75,15 @@ export default {
       return json({ error: "Not found." }, 404);
     }
 
-    if (!env.FIREBASE_PROJECT_ID || !env.GEMINI_API_KEY) {
-      return json({ error: "AI service is not configured yet." }, 503);
+    const missingConfig = [];
+    if (!env.FIREBASE_PROJECT_ID) missingConfig.push("FIREBASE_PROJECT_ID");
+    if (!env.GEMINI_API_KEY) missingConfig.push("GEMINI_API_KEY");
+    if (missingConfig.length) {
+      // Report binding names only; never expose secret values.
+      return json({
+        error: "AI service is not configured yet.",
+        missing: missingConfig,
+      }, 503);
     }
 
     try {
