@@ -278,6 +278,27 @@ export default {
       return json({ error: "Please enter a meal description under 4,000 characters." }, 400);
     }
 
+    if (url.pathname === "/api/demo-analysis") {
+      const access = await getAccess(env.DB, userId);
+      if (access.status === "trialing" || access.status === "active") {
+        return json({ error: "Your account already has premium access. Use standard meal analysis.", code: "PREMIUM_ACTIVE" }, 409);
+      }
+      let demoReservation;
+      try { demoReservation = await reserveDemo(env.DB, userId); }
+      catch { return json({ error: "Demo usage controls are unavailable. Please try again." }, 503); }
+      if (!demoReservation.allowed) return json(demoReservation, demoReservation.status);
+      const demoResult = await callGemini(env, model, makeMealPrompt(prompt, category));
+      if (demoResult.error) {
+        try { await refundDemo(env.DB, userId); } catch {}
+        return json({ error: demoResult.error, demoUsage: await getDemoUsage(env.DB, userId) }, demoResult.status);
+      }
+      return json({ text: demoResult.text, demoUsage: demoReservation.usage, access });
+    }
+
+    if (!await hasPremiumAccess(env.DB, userId)) {
+      return json({ error: "Your demo analyses are used or your trial has ended. Start a trial or subscribe to continue.", code: "SUBSCRIPTION_REQUIRED" }, 402);
+    }
+
     let reservation;
     try {
       reservation = await reserveAnalysis(env.DB, userId);
