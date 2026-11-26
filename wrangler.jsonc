@@ -12,5 +12,9 @@
     ]
   },
   "preview_urls": true,
-  "previews": {}
+  "previews": {
+    "vars": {
+      "FIREBASE_PROJECT_ID": "nutritrack-ai-6337e"
+    }
+  }
 }
