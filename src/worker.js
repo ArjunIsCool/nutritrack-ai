@@ -7,7 +7,6 @@ const FIREBASE_JWKS = createRemoteJWKSet(
 const MODEL_ALLOWLIST = new Set([
   "gemini-3.8-flash",
   "gemini-3.5-flash-lite",
-  "gemini-2.5-flash",
 ]);
 
 const json = (data, status = 200) => new Response(JSON.stringify(data), {
@@ -97,7 +96,7 @@ export default {
 
     const model = typeof body.model === "string" && MODEL_ALLOWLIST.has(body.model)
       ? body.model
-      : "gemini-2.5-flash";
+      : "gemini-3.5-flash-lite";
 
     if (url.pathname === "/api/ai-status") {
       const result = await callGemini(env, model, "Reply with exactly: NutriTrack AI connection successful.", true);
