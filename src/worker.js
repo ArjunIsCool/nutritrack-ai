@@ -354,7 +354,10 @@ export default {
     if (!env.DB) missingConfig.push("DB");
     if (["/api/create-subscription", "/api/cancel-subscription"].includes(url.pathname) && !razorpayConfigured(env)) missingConfig.push("RAZORPAY_API_KEY/RAZORPAY_SECRET");
     if (missingConfig.length) {
-      return json({ error: "AI service is not configured yet.", missing: missingConfig }, 503);
+      const geminiPath = ["/api/meal-analysis", "/api/demo-analysis", "/api/ai-status"].includes(url.pathname);
+      const subscriptionPath = ["/api/create-subscription", "/api/cancel-subscription"].includes(url.pathname);
+      const message = geminiPath ? "Gemini AI is not configured on this Preview deployment." : subscriptionPath ? "Razorpay subscription service is not configured on this Preview deployment." : "Account service is not configured on this Preview deployment.";
+      return json({ error: message, missing: missingConfig }, 503);
     }
 
     let userId;
