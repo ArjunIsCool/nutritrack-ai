@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { Activity, Apple, ArrowDownRight, ArrowUpRight, BarChart3, Bell, CalendarDays, Check, ChevronDown, ChevronRight, CircleHelp, Clock3, CloudDownload, Coffee, Flame, Gauge, HeartPulse, History, Home, KeyRound, Leaf, LoaderCircle, LogOut, Menu, MessageSquareText, MoreHorizontal, Plus, Scale, Settings, ShieldCheck, Sparkles, Target, Trash2, Utensils, Wallet, X, Zap } from 'lucide-react';
+import { Activity, Apple, ArrowDownRight, ArrowUpRight, BarChart3, Bell, CalendarDays, Check, ChevronDown, ChevronRight, CircleHelp, Clock3, CloudDownload, Coffee, Flame, Gauge, HeartPulse, History, Home, Leaf, LoaderCircle, LogOut, Menu, MessageSquareText, MoreHorizontal, Plus, Scale, Settings, ShieldCheck, Sparkles, Target, Trash2, Utensils, Wallet, X, Zap } from 'lucide-react';
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { onAuthStateChanged, signInWithPopup, signOut } from 'firebase/auth';
 import { auth, firebaseConfigured, googleProvider } from './firebase';
@@ -32,8 +32,7 @@ function App(){
   const [profile,setProfile] = useState(()=>read('nt_profile',seedProfile));
   const [meals,setMeals] = useState(()=>read('nt_meals',seedMeals));
   const [weights,setWeights] = useState(()=>read('nt_weights',[]));
-  const [apiKey,setApiKey] = useState(()=>localStorage.getItem('nt_gemini_key')||'');
-  const [model,setModel] = useState(()=>localStorage.getItem('nt_model')||'gemini-3.8-flash');
+  const [model,setModel] = useState(()=>localStorage.getItem('nt_model')||'gemini-2.5-flash');
   const [page,setPage] = useState('Dashboard');
   const [prompt,setPrompt] = useState('');
   const [category,setCategory] = useState('Meal');
@@ -41,7 +40,6 @@ function App(){
   const [error,setError] = useState('');
   const [notice,setNotice] = useState('');
   const [draft,setDraft] = useState(null);
-  const [showKey,setShowKey] = useState(false);
   const [showSetup,setShowSetup] = useState(()=>!read('nt_setup_done',false));
   const [mobileNav,setMobileNav] = useState(false);
   const [editingProfile,setEditingProfile] = useState(false);
@@ -110,6 +108,7 @@ function App(){
     }, 900);
     return () => clearTimeout(timer);
   }, [authUser, cloudReady, profile, weights, meals]);
+  useEffect(()=>{ localStorage.removeItem('nt_gemini_key'); },[]);
   useEffect(()=>{ if('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(()=>{}); },[]);
   useEffect(()=>{ if(notice){const t=setTimeout(()=>setNotice(''),3200);return()=>clearTimeout(t);} },[notice]);
 
@@ -136,17 +135,16 @@ function App(){
   };
   const analyzeMeal = async () => {
     if(!prompt.trim()) return;
-    if(!apiKey.trim()){setError('Add your Gemini API key in Settings before analysing meals.');setPage('Settings');return;}
+    if(!authUser){setError('Sign in with Google in Settings to use AI meal analysis.');setPage('Settings');return;}
     setBusy(true);setError('');setDraft(null);
-    const instruction = `You are a careful nutrition estimation assistant for an Indian user. Analyze this meal: "${prompt.replace(/"/g,'\\"')}". Meal category selected: ${category}. Return ONLY valid JSON with this exact structure: {"meal_name":"short title","items":[{"name":"food and portion","calories":0,"protein":0,"carbs":0,"fat":0,"fiber":0,"sugar":0}],"totals":{"calories":0,"protein":0,"carbs":0,"fat":0,"fiber":0,"sugar":0},"quality":"Good|Moderate|Occasional","assessment":"2-3 concise sentences","assumptions":["portion assumptions"],"needs_clarification":false,"clarifying_question":""}. Use realistic estimates, metric quantities, and account for cooking oil where possible. Values must be numbers. Do not claim exactness. If portion ambiguity materially changes the estimate, set needs_clarification true and ask one concise question; still provide a provisional estimate. Do not give medical diagnoses.`;
     try{
-      const res=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey.trim())}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({contents:[{parts:[{text:instruction}]}],generationConfig:{temperature:0.2,responseMimeType:'application/json'}})});
+      const token=await authUser.getIdToken();
+      const res=await fetch('/api/meal-analysis',{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${token}`},body:JSON.stringify({prompt,category,model})});
       const data=await res.json();
-      if(!res.ok) throw new Error(data?.error?.message||`Gemini request failed (${res.status})`);
-      const raw=data.candidates?.[0]?.content?.parts?.map(p=>p.text||'').join('')||'';
-      const parsed=JSON.parse(raw.replace(/^```json\s*/,'').replace(/```$/,''));
+      if(!res.ok) throw new Error(data?.error||`Meal analysis failed (${res.status})`);
+      const parsed=JSON.parse((data.text||'').replace(/^```json\\s*/,'').replace(/```$/,''));
       setDraft({...parsed,category,rawPrompt:prompt,date:today(),time:new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',hour12:false})});
-    }catch(e){setError(e.message||'Could not analyse this meal. Check your API key and connection.');}
+    }catch(e){setError(e.message||'Could not analyse this meal. Please check your sign-in and connection.');}
     finally{setBusy(false);}
   };
   const saveMeal=()=>{if(!draft)return;const t=draft.totals||{};const meal={id:crypto.randomUUID?.()||String(Date.now()),date:draft.date||today(),time:draft.time||'12:00',category:draft.category||'Meal',name:draft.meal_name||'Meal',items:draft.items||[],calories:+t.calories||0,protein:+t.protein||0,carbs:+t.carbs||0,fat:+t.fat||0,fiber:+t.fiber||0,sugar:+t.sugar||0,assessment:draft.assessment||'',quality:draft.quality||'Moderate',source:'gemini'};setMeals(prev=>[meal,...prev]);setDraft(null);setPrompt('');setPage('Dashboard');setNotice('Meal saved to today’s log.');};
@@ -155,7 +153,18 @@ function App(){
   const saveWeight=()=>{const n=Number(weightInput);if(!n||n<25||n>350)return;setWeights(w=>[{date:today(),weight:n},...w.filter(x=>x.date!==today())]);setProfile(p=>({...p,weight:n}));setWeightInput('');setNotice('Weight entry saved.');};
   const exportData=()=>{const data={app:'NutriTrack AI',version:1,exportedAt:new Date().toISOString(),profile,meals,weights};const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=`nutritrack-backup-${today()}.json`;a.click();URL.revokeObjectURL(url);setNotice('Backup exported.');};
   const importData=e=>{const file=e.target.files?.[0];if(!file)return;const reader=new FileReader();reader.onload=()=>{try{const d=JSON.parse(reader.result);if(d.app!=='NutriTrack AI'||!Array.isArray(d.meals)||!d.profile)throw new Error('This does not look like a NutriTrack AI backup.');if(!confirm(`Import ${d.meals.length} meals and replace current profile/history?`))return;setProfile(d.profile);setMeals(d.meals);setWeights(Array.isArray(d.weights)?d.weights:[]);setNotice('Backup imported successfully.');}catch(err){setError(err.message||'Could not read backup file.');}};reader.readAsText(file);e.target.value='';};
-  const testConnection=async()=>{if(!apiKey.trim()){setError('Enter an API key first.');return;}setBusy(true);setError('');try{const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey.trim())}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({contents:[{parts:[{text:'Reply with exactly: NutriTrack AI connection successful.'}]}]})});const d=await r.json();if(!r.ok)throw new Error(d?.error?.message||`Request failed (${r.status})`);setNotice('Gemini connection successful.');}catch(e){setError(e.message||'Connection test failed.');}finally{setBusy(false);}};
+  const testConnection=async()=>{
+    if(!authUser){setError('Sign in with Google before testing AI.');return;}
+    setBusy(true);setError('');
+    try{
+      const token=await authUser.getIdToken();
+      const r=await fetch('/api/ai-status',{method:'POST',headers:{'Authorization':`Bearer ${token}`,'Content-Type':'application/json'},body:JSON.stringify({model})});
+      const d=await r.json();
+      if(!r.ok)throw new Error(d?.error||`Request failed (${r.status})`);
+      setNotice('NutriTrack AI service is connected.');
+    }catch(e){setError(e.message||'Connection test failed.');}
+    finally{setBusy(false);}
+  };
   const nav=[['Dashboard',Home],['AI Food Logger',MessageSquareText],['Meal History',History],['Analytics',BarChart3],['Goals',Target],['Settings',Settings]];
   const chartData=Array.from({length:7},(_,i)=>{const d=new Date();d.setDate(d.getDate()-(6-i));const key=d.toISOString().slice(0,10);return {day:d.toLocaleDateString('en',{weekday:'short'}),calories:meals.filter(m=>m.date===key).reduce((s,m)=>s+(+m.calories||0),0)};});
   const displayMeals=showAll?meals:meals.slice(0,5);
@@ -197,9 +206,9 @@ function App(){
             {authError && <div className="error-box">{authError}</div>}
             <div className="field-help">On first sign-in, existing browser data is uploaded if the account has no cloud history. Existing cloud history is loaded onto this device.</div>
           </div>
-          <div className="card settings-card"><div className="settings-title"><div className="settings-icon gemini"><Sparkles size={19}/></div><div><h3>AI provider</h3><p>Connect Gemini to power meal analysis.</p></div><span className="connected-dot"/></div><label className="field-label">PROVIDER</label><select value="gemini" disabled><option value="gemini">Google Gemini</option></select><label className="field-label">API KEY</label><div className="key-input"><KeyRound size={16}/><input type={showKey?'text':'password'} placeholder="Paste your Gemini API key" value={apiKey} onChange={e=>{setApiKey(e.target.value);localStorage.setItem('nt_gemini_key',e.target.value);}}/><button className="icon-btn" onClick={()=>setShowKey(!showKey)}>{showKey?'Hide':'Show'}</button></div><div className="field-help">Your key is saved in this browser's local storage. Anyone with access to this browser profile may be able to retrieve it.</div><label className="field-label">GEMINI MODEL</label><select value={model} onChange={e=>{setModel(e.target.value);localStorage.setItem('nt_model',e.target.value);}}><option value="gemini-3.8-flash">Gemini 3.8 Flash</option><option value="gemini-3.5-flash-lite">Gemini 3.5 Flash-Lite</option><option value="gemini-2.5-flash">Gemini 2.5 Flash (legacy option)</option></select><div className="settings-actions"><button className="secondary-btn" onClick={testConnection} disabled={busy}>{busy?<LoaderCircle className="spin" size={15}/>:<Zap size={15}/>} Test connection</button><button className="primary-btn" onClick={()=>{localStorage.setItem('nt_gemini_key',apiKey);setNotice('AI settings saved on this device.');}}><Check size={15}/> Save settings</button></div>{error&&<div className="error-box">{error}</div>}<div className="api-help"><b>Where do I get an API key?</b><p>Create a key in Google AI Studio. Gemini API usage has separate quotas and terms from a Gemini consumer subscription.</p><a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer">Open Google AI Studio <ChevronRight size={13}/></a></div></div>
+          <div className="card settings-card"><div className="settings-title"><div className="settings-icon gemini"><Sparkles size={19}/></div><div><h3>NutriTrack AI</h3><p>Managed Gemini service for meal analysis.</p></div><span className="connected-dot"/></div><div className="field-help">AI requests are securely sent through NutriTrack's server. Your API key is never stored in this browser.</div><label className="field-label">GEMINI MODEL</label><select value={model} onChange={e=>{setModel(e.target.value);localStorage.setItem('nt_model',e.target.value);}}><option value="gemini-2.5-flash">Gemini 2.5 Flash</option><option value="gemini-2.5-flash-lite">Gemini 2.5 Flash-Lite</option><option value="gemini-3.5-flash-lite">Gemini 3.5 Flash-Lite</option><option value="gemini-3.8-flash">Gemini 3.8 Flash</option></select><div className="settings-actions"><button className="secondary-btn" onClick={testConnection} disabled={busy||!authUser}>{busy?<LoaderCircle className="spin" size={15}/>:<Zap size={15}/>} Test AI service</button></div>{!authUser&&<div className="field-help">Sign in with Google in the Account & cloud sync section to use AI.</div>}{error&&<div className="error-box">{error}</div>}</div>
           <div className="card settings-card"><div className="settings-title"><div className="settings-icon"><Wallet size={19}/></div><div><h3>Data & backups</h3><p>Your meals and profile are stored locally and, when signed in, synchronized to your cloud account.</p></div></div><div className="storage-info"><div><b>{meals.length}</b><small>Meals stored</small></div><div><b>{weights.length}</b><small>Weight entries</small></div><div><b>{authUser ? (syncStatus === 'synced' ? 'Cloud' : 'Pending') : 'Local'}</b><small>Storage mode</small></div></div><button className="backup-action" onClick={exportData}><CloudDownload size={17}/><div><b>Export backup</b><small>Download profile, meals and weight history as JSON</small></div><ChevronRight size={16}/></button><label className="backup-action import-label"><CloudDownload size={17}/><div><b>Import backup</b><small>Restore from a NutriTrack JSON backup</small></div><ChevronRight size={16}/><input type="file" accept="application/json,.json" onChange={importData}/></label><div className="field-help">Import replaces the current profile and history. Export regularly to avoid losing data if you clear browser storage or change devices.</div></div>
-          <div className="card settings-card"><div className="settings-title"><div className="settings-icon"><ShieldCheck size={19}/></div><div><h3>Privacy & security</h3><p>Understand where your information goes.</p></div></div><div className="privacy-list"><p><Check size={15}/> Meal history and goals stay in this browser and sync to your account when signed in.</p><p><Check size={15}/> Only meal prompts are sent to Gemini when you request analysis.</p><p><Check size={15}/> Google sign-in is optional; local-only mode remains available.</p><p><X size={15}/> A browser-stored API key is not protected like a server-side secret.</p></div><button className="danger-btn" onClick={()=>{if(confirm('Delete all NutriTrack meals, profile and weight history from this browser? This cannot be undone unless you have a backup.')){localStorage.removeItem('nt_meals');localStorage.removeItem('nt_profile');localStorage.removeItem('nt_weights');setMeals([]);setWeights([]);setProfile(seedProfile);setNotice('Local app data cleared.');}}}><Trash2 size={15}/> Clear app data</button></div></div></>}
+          <div className="card settings-card"><div className="settings-title"><div className="settings-icon"><ShieldCheck size={19}/></div><div><h3>Privacy & security</h3><p>Understand where your information goes.</p></div></div><div className="privacy-list"><p><Check size={15}/> Meal history and goals stay in this browser and sync to your account when signed in.</p><p><Check size={15}/> Only meal prompts are sent to Gemini when you request analysis.</p><p><Check size={15}/> Google sign-in is optional; local-only mode remains available.</p><p><Check size={15}/> Gemini credentials are kept on the server and are not exposed in the browser.</p></div><button className="danger-btn" onClick={()=>{if(confirm('Delete all NutriTrack meals, profile and weight history from this browser? This cannot be undone unless you have a backup.')){localStorage.removeItem('nt_meals');localStorage.removeItem('nt_profile');localStorage.removeItem('nt_weights');setMeals([]);setWeights([]);setProfile(seedProfile);setNotice('Local app data cleared.');}}}><Trash2 size={15}/> Clear app data</button></div></div></>}
       </div>
       <footer className="footer"><span>© {new Date().getFullYear()} NutriTrack AI</span><span>Made for mindful everyday nutrition <HeartPulse size={13}/></span></footer>
     </main>
