@@ -114,16 +114,22 @@ function App(){
     if (!authUser) { setAiUsage(null); setAccess(null); setDemoUsage(null); return undefined; }
     let active = true;
     setUsageLoading(true);
-    authUser.getIdToken().then(token => fetch('/api/access', {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({}),
-    })).then(async response => {
-      const data = await response.json();
-      if (!response.ok) throw new Error(data?.error || 'Could not load AI usage.');
-      if (active) { setAccess(data.access); setDemoUsage(data.demoUsage); }
+    authUser.getIdToken().then(async token => {
+      const headers = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
+      const [accessResponse, usageResponse] = await Promise.all([
+        fetch('/api/access', { method: 'POST', headers, body: JSON.stringify({}) }),
+        fetch('/api/usage', { method: 'POST', headers, body: JSON.stringify({}) }),
+      ]);
+      const accessData = await accessResponse.json();
+      if (!accessResponse.ok) throw new Error(accessData?.error || 'Could not load account access.');
+      const usageData = usageResponse.ok ? await usageResponse.json() : null;
+      if (active) {
+        setAccess(accessData.access);
+        setDemoUsage(accessData.demoUsage);
+        setAiUsage(usageData?.usage || null);
+      }
     }).catch(() => {
-      if (active) setAiUsage(null);
+      if (active) { setAiUsage(null); setAccess(null); setDemoUsage(null); }
     }).finally(() => {
       if (active) setUsageLoading(false);
     });
