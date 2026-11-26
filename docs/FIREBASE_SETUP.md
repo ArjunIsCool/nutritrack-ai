@@ -48,10 +48,15 @@ Create a D1 database and apply the migration:
 
 ```bash
 npx wrangler d1 create nutritrack-ai-usage
+```
+
+The create command prints a database ID. Put that exact ID in `wrangler.jsonc` under `d1_databases[0].database_id`, replacing `REPLACE_WITH_D1_DATABASE_ID`. Keep the binding name as `DB` and the migration directory as `migrations`. The database ID is an identifier, not a secret. Commit the real ID in the Wrangler config. Then apply the migration:
+
+```bash
 npx wrangler d1 migrations apply nutritrack-ai-usage --remote
 ```
 
-The create command prints a database ID. Put that exact ID in `wrangler.jsonc` under `d1_databases[0].database_id`, replacing `REPLACE_WITH_D1_DATABASE_ID`. Keep the binding name as `DB` and the migration directory as `migrations`. Commit the real ID in the Wrangler config (the ID is an identifier, not a secret), then allow Cloudflare to deploy the Preview again.
+Allow Cloudflare to deploy the Preview again after the config and migration are ready.
 
 The app calls the authenticated `POST /api/usage` endpoint to display daily and monthly usage. If the D1 binding is missing or the migration has not been applied, meal analysis fails closed with a service-unavailable response; it will not bypass the quota controls.
 
