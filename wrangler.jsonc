@@ -15,7 +15,14 @@
   "previews": {
     "vars": {
       "FIREBASE_PROJECT_ID": "nutritrack-ai-6337e"
-    }
+    },
+    "d1_databases": [
+      {
+        "binding": "DB",
+        "database_name": "nutritrack-ai-usage",
+        "database_id": "74007f8b-3706-4bb8-993e-677db7956ff9"
+      }
+    ]
   },
   "d1_databases": [
     {
