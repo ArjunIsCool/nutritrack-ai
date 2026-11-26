@@ -92,3 +92,26 @@ Razorpay payment activation is deliberately not enabled in this foundation commi
 Razorpay webhook subscription payloads can include a provider card_id (for example, in subscription.authenticated). The duplicate-trial check should use a stable provider-issued payment-method identifier when supplied; never use last-four digits as a unique card identity and never collect raw card number or CVV. If the provider does not return a stable identifier for a payment method, do not claim duplicate-card blocking is guaranteed.
 
 Trial eligibility policy: one successful three-day trial per recognized payment method. A previously used method cannot claim another trial, but can still purchase a paid subscription. A declined/abandoned authorization does not consume a trial. The trial must disclose the first charge amount/date and obtain explicit consent to the recurring mandate.
+
+
+## 10. Razorpay Test Mode subscriptions
+
+The subscription checkout implementation uses the following Cloudflare Worker secrets (not browser variables):
+
+- `RAZORPAY_API_KEY` — Test Mode Key ID (public identifier, but kept server-side for consistency).
+- `RAZORPAY_SECRET` — matching Test Mode Key Secret.
+- `RAZORPAY_WEBHOOK_SECRET` — separate webhook signing secret; add this after creating the webhook in the Razorpay Test Mode dashboard.
+
+Do not paste secrets into source control, Vite variables, or chat. The Worker creates and caches the two Razorpay Plans in D1 automatically: ₹75/month and ₹500/year. It then creates a Subscription with a start date three days in the future and opens Razorpay Checkout. Checkout is restricted to cards for the card-based trial policy. The browser's Checkout handler does not grant access.
+
+Apply migration 0003 after 0002:
+
+```bash
+npx wrangler d1 migrations apply nutritrack-ai-usage --remote
+```
+
+Configure a Test Mode webhook in Razorpay Dashboard → Account & Settings → Webhooks. Use the Preview Worker URL plus `/api/razorpay-webhook`. Subscribe to the subscription authorization/activation, charge, halt, cancel and completion events available in your account. Set a strong webhook secret, then add that exact value as the `RAZORPAY_WEBHOOK_SECRET` Worker Secret and redeploy Preview. Razorpay signs the raw request body; the Worker validates `X-Razorpay-Signature` before parsing.
+
+The current trial-eligibility check requires a card payment and a provider-issued card identifier in the webhook payload. If the identifier is absent, the trial is rejected rather than silently weakening the one-trial-per-card rule. Test the exact payloads Razorpay sends for your account before relying on this protection. A successful Checkout modal alone does not activate access; wait for the verified webhook and use Billing → Refresh access.
+
+This is a Test Mode integration. Do not switch to Live credentials or accept real payments until webhook event handling, cancellation, duplicate-card attempts, declined/abandoned checkout, trial expiry, recurring charge and recovery cases have been exercised end-to-end.
