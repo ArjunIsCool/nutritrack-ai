@@ -1,14 +1,14 @@
 # NutriTrack AI
 
-A mobile-first, installable Progressive Web App for personal calorie and nutrition tracking. It uses a Cloudflare Worker to authenticate and proxy Gemini meal-analysis requests, with Firebase Authentication and Firestore for optional account sync.
+A mobile-first, installable Progressive Web App for personal calorie and nutrition tracking. It uses a Cloudflare Worker to authenticate and proxy Gemini meal-analysis requests, with mandatory Firebase Authentication and Firestore-backed account data.
 
 ## Requirements
 - Node.js 18 or newer
 - A Gemini API key from https://aistudio.google.com/apikey
 
-## Firebase cloud sync
+## Account access and cloud data
 
-Google sign-in and cross-device cloud synchronization are optional until Firebase is configured. Follow [docs/FIREBASE_SETUP.md](docs/FIREBASE_SETUP.md) and use [`.env.example`](.env.example). Without Firebase settings, the app continues to work in local-only mode.
+A Google account is required to access the app. Profile, meals and weight history are stored in Firestore; local-only mode is disabled. Existing browser data is migrated to the account once on first sign-in when no cloud profile exists.
 
 ## Run locally
 
@@ -30,9 +30,9 @@ Build with `npm run build`. The Cloudflare Workers deployment is configured in `
 
 ## Important security and data notes
 - Gemini requests are sent through the Cloudflare Worker. Configure `GEMINI_API_KEY` as a Worker Secret and `FIREBASE_PROJECT_ID` as a Worker variable; never put server secrets in `VITE_*` variables.
-- The Worker verifies Firebase ID tokens and enforces an initial allowance of 10 AI analyses per user per UTC day and 100 per UTC month, plus request throttling. These controls require the Cloudflare D1 binding and migration described in [docs/FIREBASE_SETUP.md](docs/FIREBASE_SETUP.md).
-- Subscription entitlements, payment verification, Firebase token-revocation checks and broader abuse monitoring are not implemented. Do not launch paid access until these controls are added.
-- Meal prompts are forwarded to Google's Gemini API when you request analysis. Saved meals and profile data remain in this browser unless you sign in and enable cloud sync.
+- The Worker verifies Firebase ID tokens, provides five lifetime demo analyses to accounts without premium access, and enforces 20 analyses per user per UTC day and 500 per UTC month for active trial/subscription entitlements. Demo usage and subscription access are enforced in D1.
+- Card-verified trial activation, Razorpay checkout/webhooks, payment verification, Firebase token-revocation checks and broader abuse monitoring are not yet connected. Do not enable paid subscriptions until the payment stage is completed and tested.
+- Meal prompts are forwarded to Google's Gemini API when you request analysis. Saved profile and nutrition history are stored in your authenticated Firestore account.
 - Use **Settings → Export backup** to download a JSON backup. Importing a backup replaces the current profile, meal history and weight history.
 - Clearing browser data, using a different browser or changing devices can make local records unavailable. Keep backups.
 - Gemini nutrition values are estimates, not laboratory measurements or medical advice. Review portions and meal assumptions before saving.
