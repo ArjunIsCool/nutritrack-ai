@@ -170,7 +170,8 @@ function App(){
       await signOut(auth);
       setCloudReady(false);
       setSyncStatus('local');
-      setNotice('Signed out. Your local browser copy is still available.');
+      setProfile(seedProfile); setMeals([]); setWeights([]); setAiUsage(null); setAccess(null); setDemoUsage(null);
+      setNotice('Signed out.');
     } catch (error) { setAuthError(error.message || 'Could not sign out.'); }
   };
   const analyzeMeal = async () => {
