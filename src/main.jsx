@@ -53,6 +53,10 @@ function App(){
   const [usageLoading,setUsageLoading] = useState(false);
   const [access,setAccess] = useState(null);
   const [demoUsage,setDemoUsage] = useState(null);
+  const [billingConsent,setBillingConsent] = useState(false);
+  const [checkoutBusy,setCheckoutBusy] = useState(false);
+  const [billingMessage,setBillingMessage] = useState('');
+  const [billingError,setBillingError] = useState('');
   const targets = useMemo(()=>calcTargets(profile),[profile]);
   const todayMeals = meals.filter(m=>m.date===today());
   const totals = todayMeals.reduce((a,m)=>({calories:a.calories+(+m.calories||0),protein:a.protein+(+m.protein||0),carbs:a.carbs+(+m.carbs||0),fat:a.fat+(+m.fat||0),fiber:a.fiber+(+m.fiber||0)}),{calories:0,protein:0,carbs:0,fat:0,fiber:0});
@@ -174,6 +178,36 @@ function App(){
       setNotice('Signed out.');
     } catch (error) { setAuthError(error.message || 'Could not sign out.'); }
   };
+  const refreshAccountAccess = async () => {
+    if (!authUser) return;
+    try {
+      const token = await authUser.getIdToken(true);
+      const headers = { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' };
+      const response = await fetch('/api/access', { method: 'POST', headers, body: '{}' });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Could not refresh access.');
+      setAccess(data.access); setDemoUsage(data.demoUsage);
+      const usageResponse = await fetch('/api/usage', { method: 'POST', headers, body: '{}' });
+      if (usageResponse.ok) setAiUsage((await usageResponse.json()).usage);
+      setBillingMessage('Account access refreshed.');
+    } catch (error) { setBillingError(error.message || 'Could not refresh account access.'); }
+  };
+  const startSubscription = async (planCode) => {
+    if (!billingConsent || !authUser || checkoutBusy) return;
+    setCheckoutBusy(true); setBillingError(''); setBillingMessage('');
+    try {
+      const token = await authUser.getIdToken();
+      const response = await fetch('/api/create-subscription', { method: 'POST', headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' }, body: JSON.stringify({ planCode }) });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Could not create subscription.');
+      if (!window.Razorpay) await new Promise((resolve, reject) => { const script = document.createElement('script'); script.src = 'https://checkout.razorpay.com/v1/checkout.js'; script.onload = resolve; script.onerror = () => reject(new Error('Could not load Razorpay Checkout.')); document.body.appendChild(script); });
+      const checkout = data.checkout;
+      const rzp = new window.Razorpay({ key: checkout.key, subscription_id: checkout.id, name: 'NutriTrack AI', description: planCode === 'monthly' ? '₹75 per month after 3-day trial' : '₹500 per year after 3-day trial', image: '/icons/icon-192.png', prefill: { name: authUser.displayName || '', email: authUser.email || '' }, notes: { product: 'NutriTrack AI', plan_code: planCode }, theme: { color: '#75a843' }, modal: { ondismiss: () => setBillingMessage('Checkout closed. No premium access has been granted.') }, handler: () => setBillingMessage('Checkout returned successfully. Waiting for verified server notification before enabling premium access. Use Refresh access in a moment.') });
+      rzp.on('payment.failed', event => setBillingError(event.error?.description || 'The authorization did not complete. You can try again.'));
+      rzp.open();
+    } catch (error) { setBillingError(error.message || 'Could not start checkout.'); }
+    finally { setCheckoutBusy(false); }
+  };
   const analyzeMeal = async () => {
     if(!prompt.trim()) return;
     if(!authUser){setError('Sign in to use AI meal analysis.');return;}
@@ -213,7 +247,7 @@ function App(){
     }catch(e){setError(e.message||'Connection test failed.');}
     finally{setBusy(false);}
   };
-  const nav=[['Dashboard',Home],['AI Food Logger',MessageSquareText],['Meal History',History],['Analytics',BarChart3],['Goals',Target],['Settings',Settings]];
+  const nav=[['Dashboard',Home],['AI Food Logger',MessageSquareText],['Meal History',History],['Analytics',BarChart3],['Goals',Target],['Billing',Wallet],['Settings',Settings]];
   const chartData=Array.from({length:7},(_,i)=>{const d=new Date();d.setDate(d.getDate()-(6-i));const key=d.toISOString().slice(0,10);return {day:d.toLocaleDateString('en',{weekday:'short'}),calories:meals.filter(m=>m.date===key).reduce((s,m)=>s+(+m.calories||0),0)};});
   const displayMeals=showAll?meals:meals.slice(0,5);
   if (authLoading) return <div className="auth-gate"><div className="auth-gate-card"><div className="brand-mark"><Apple size={23}/></div><h1>NutriTrack <span>AI</span></h1><p>Checking your account…</p><LoaderCircle className="spin" size={22}/></div></div>;
@@ -245,6 +279,20 @@ function App(){
         {page==='Meal History'&&<><div className="page-intro"><h2>Your food diary</h2><p>Every meal, in one place. Review and manage your nutrition history.</p></div><div className="card history-card"><div className="section-head"><div><h3>All meals</h3><p>{meals.length} meals recorded on this device</p></div><button className="primary-btn small-btn" onClick={()=>setPage('AI Food Logger')}><Plus size={16}/> Add meal</button></div>{meals.length===0?<EmptyState icon={History} title="Your diary is empty" desc="Start by logging your first meal with AI." action="Log a meal" onClick={()=>setPage('AI Food Logger')}/>:<div className="meal-list">{meals.map(m=><MealRow key={m.id} meal={m} onDelete={removeMeal} showDate/>)}</div>}</div></>}
         {page==='Analytics'&&<><div className="page-intro"><h2>Your nutrition insights</h2><p>Look beyond individual meals and understand your habits over time.</p></div><div className="stats-grid analytics-stats"><StatCard icon={Flame} label="TODAY'S INTAKE" value={`${fmt(totals.calories)} kcal`} sub={`${Math.round(progress)}% of daily goal`} color="orange"/><StatCard icon={Activity} label="PROTEIN TODAY" value={`${fmt(totals.protein)} g`} sub={`Target ${targets.protein} g`} color="green"/><StatCard icon={CalendarDays} label="MEALS LOGGED" value={todayMeals.length} sub="Today" color="violet"/></div><div className="card chart-card analytics-chart"><div className="section-head"><div><h3>Daily calorie intake</h3><p>Last seven days</p></div><span className="chart-legend"><i/> Calories</span></div><div className="chart-wrap tall"><ResponsiveContainer width="100%" height="100%"><AreaChart data={chartData} margin={{top:12,right:10,left:-18,bottom:0}}><defs><linearGradient id="anaFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#a7d96b" stopOpacity={.25}/><stop offset="95%" stopColor="#a7d96b" stopOpacity={0}/></linearGradient></defs><CartesianGrid stroke="#292e27" strokeDasharray="3 5" vertical={false}/><XAxis dataKey="day" axisLine={false} tickLine={false} tick={{fill:'#858d7e',fontSize:12}} dy={10}/><YAxis axisLine={false} tickLine={false} tick={{fill:'#858d7e',fontSize:11}}/><Tooltip contentStyle={{background:'#20251e',border:'1px solid #343c30',borderRadius:10,color:'#f4f5ef'}}/><Area type="monotone" dataKey="calories" stroke="#a7d96b" strokeWidth={2.5} fill="url(#anaFill)"/></AreaChart></ResponsiveContainer></div></div><div className="card insight-card"><div className="insight-icon"><Sparkles size={18}/></div><div><b>Build a useful baseline</b><p>Log meals consistently for at least 7–14 days. Your trend data will become more informative as you build a history.</p></div></div></>}
         {page==='Goals'&&<><div className="page-intro"><h2>Your goals, your pace</h2><p>Set a realistic target. Your daily nutrition budget updates automatically.</p></div><div className="goals-layout"><div className="card goal-form"><div className="section-head"><div><h3>Personal profile & goals</h3><p>Used to estimate your energy needs</p></div><button className="text-btn" onClick={()=>setEditingProfile(!editingProfile)}>{editingProfile?'Cancel':'Edit details'}</button></div><div className="profile-grid"><NumberField label="Age" value={profile.age} suffix="years" disabled={!editingProfile} onChange={v=>setProfile(p=>({...p,age:+v}))}/><NumberField label="Height" value={profile.height} suffix="cm" disabled={!editingProfile} onChange={v=>setProfile(p=>({...p,height:+v}))}/><NumberField label="Current weight" value={profile.weight} suffix="kg" disabled={!editingProfile} onChange={v=>setProfile(p=>({...p,weight:+v}))}/><NumberField label="Target weight" value={profile.targetWeight} suffix="kg" disabled={!editingProfile} onChange={v=>setProfile(p=>({...p,targetWeight:+v}))}/></div>{editingProfile&&<button className="primary-btn" onClick={saveProfile}>Save profile</button>}<div className="form-divider"/><label className="field-label">YOUR OBJECTIVE</label><div className="goal-options">{[['lose','Lose weight',ArrowDownRight],['maintain','Maintain',Scale],['gain','Gain weight',ArrowUpRight]].map(([v,l,I])=><button key={v} className={profile.goal===v?'chosen':''} onClick={()=>setProfile(p=>({...p,goal:v}))}><I size={18}/><b>{l}</b></button>)}</div><label className="field-label">ACTIVITY LEVEL</label><select value={profile.activity} onChange={e=>setProfile(p=>({...p,activity:e.target.value}))}><option value="sedentary">Sedentary – little or no exercise</option><option value="light">Light – exercise 1–3 days/week</option><option value="moderate">Moderate – exercise 3–5 days/week</option><option value="high">Very active – hard exercise most days</option></select>{profile.goal!=='maintain'&&<><label className="field-label">DESIRED WEEKLY CHANGE</label><div className="pace-options">{[0.25,0.5,0.75].map(v=><button key={v} className={profile.pace===v?'chosen':''} onClick={()=>setProfile(p=>({...p,pace:v}))}><b>{v} kg</b><small>per week</small></button>)}</div></>}<div className="form-divider"/><label className="field-label">WEIGHT CHECK-IN</label><div className="weight-entry"><input type="number" step="0.1" placeholder="Today's weight in kg" value={weightInput} onChange={e=>setWeightInput(e.target.value)}/><button className="secondary-btn" onClick={saveWeight}>Save weight</button></div></div><div className="goals-side"><div className="card target-card"><div className="metric-icon green"><Target size={18}/></div><span>ESTIMATED DAILY CALORIE TARGET</span><strong>{fmt(targets.calories)}</strong><small>kcal per day</small><div className="target-row"><span>Estimated BMR</span><b>{fmt(targets.bmr)} kcal</b></div><div className="target-row"><span>Estimated TDEE</span><b>{fmt(targets.tdee)} kcal</b></div><div className="target-row"><span>Goal adjustment</span><b>{profile.goal==='maintain'?'0':`${profile.goal==='lose'?'−':'+'}${fmt(profile.pace*7700/7)} kcal`}</b></div></div><div className="card macro-target-card"><h3>Suggested macro targets</h3><p>Starting estimates to support your goal.</p>{[['Protein',targets.protein,'blue'],['Carbohydrates',targets.carbs,'yellow'],['Fat',targets.fat,'purple']].map(([n,v,c])=><div className="target-row" key={n}><span><i className={`dot ${c}`}/>{n}</span><b>{v} g</b></div>)}</div><div className="safety-note"><ShieldCheck size={17}/><p>These are estimates, not medical advice. Actual needs vary. Avoid aggressive weight changes and consult a qualified professional if you have medical or dietary concerns.</p></div></div></div></>}
+
+        {page==='Billing'&&<><div className="page-intro"><h2>Choose your NutriTrack plan</h2><p>Start with a card-authorized three-day trial. Your selected plan begins billing after the trial.</p></div>
+          <div className="card settings-card billing-status"><div className="settings-title"><div className="settings-icon"><Wallet size={19}/></div><div><h3>Current access</h3><p>{access?.status === 'trialing' ? 'Your three-day trial is active.' : access?.status === 'active' ? 'Your subscription is active.' : 'You are currently using demo access.'}</p></div><span className="quality-pill good">{access?.status || 'Loading'}</span></div>
+          {access?.trialEndsAt&&access.status==='trialing'&&<p className="field-help">Trial ends: {new Date(access.trialEndsAt).toLocaleString('en-IN')}</p>}
+          {access?.paidUntil&&<p className="field-help">Access through: {new Date(access.paidUntil).toLocaleDateString('en-IN')}</p>}
+          <button className="secondary-btn" onClick={refreshAccountAccess}>Refresh access</button>
+          {billingMessage&&<div className="field-help">{billingMessage}</div>}{billingError&&<div className="error-box">{billingError}</div>}
+          </div>
+          <div className="grid-two billing-plans">
+            <div className="card settings-card"><div className="setup-step">MONTHLY</div><h2>₹75 <small>/ month</small></h2><p>Flexible monthly billing after your trial.</p><ul><li>Three-day trial</li><li>20 AI analyses per day</li><li>500 AI analyses per month</li></ul><button className="primary-btn full-btn" disabled={!billingConsent||checkoutBusy||access?.status==='trialing'||access?.status==='active'} onClick={()=>startSubscription('monthly')}>{checkoutBusy?'Opening checkout…':'Start monthly trial'}</button></div>
+            <div className="card settings-card"><div className="setup-step">ANNUAL</div><h2>₹500 <small>/ year</small></h2><p>One annual payment after your trial.</p><ul><li>Three-day trial</li><li>20 AI analyses per day</li><li>500 AI analyses per month</li></ul><button className="primary-btn full-btn" disabled={!billingConsent||checkoutBusy||access?.status==='trialing'||access?.status==='active'} onClick={()=>startSubscription('annual')}>{checkoutBusy?'Opening checkout…':'Start annual trial'}</button></div>
+          </div>
+          <div className="card settings-card"><label className="consent-row"><input type="checkbox" checked={billingConsent} onChange={e=>setBillingConsent(e.target.checked)}/><span>I authorize recurring payments for the plan I select. After the three-day trial, ₹75 will be charged monthly or ₹500 annually, depending on my selection, until I cancel. I understand Razorpay may perform a nominal payment-method authorization.</span></label><div className="field-help">The first charge date is three days after successful authorization. Razorpay Checkout displays the subscription authorization details. A trial is activated only after the server verifies the provider notification.</div></div>
+        </>}
         {page==='Settings'&&<><div className="page-intro"><h2>Settings & integrations</h2><p>Configure your AI provider and manage your personal data.</p></div><div className="settings-layout">
           <div className="card settings-card">
             <div className="settings-title"><div className="settings-icon"><ShieldCheck size={19}/></div><div><h3>Account & cloud sync</h3><p>Sign in to keep your nutrition history across devices.</p></div><span className={authUser ? 'connected-dot' : ''}/></div>
