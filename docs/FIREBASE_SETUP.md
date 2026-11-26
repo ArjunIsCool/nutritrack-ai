@@ -26,3 +26,18 @@ Publish the contents of `firestore.rules` in Firebase Console → Firestore Data
 
 ## 5. Launch checks
 Test Google sign-in on the deployed HTTPS domain, confirm Firestore rules are published, and verify that two devices signed into the same account see the same records. Configure Firebase budget alerts/usage monitoring. Do not launch paid subscriptions until server-side AI proxying and payment verification are implemented.
+
+## 6. Managed AI service (Worker)
+
+Meal analysis now calls the same-origin `/api/meal-analysis` endpoint. The Cloudflare Worker verifies the Firebase ID token before forwarding the prompt to Gemini. The Gemini API key is not sent to or stored in the browser.
+
+Configure these bindings for both Preview and Production deployments in Cloudflare Workers → Settings → Variables and Secrets:
+
+- `FIREBASE_PROJECT_ID` — a plain-text variable containing the Firebase project ID (the same value as `VITE_FIREBASE_PROJECT_ID`).
+- `GEMINI_API_KEY` — a **Secret** containing the Gemini API key from Google AI Studio.
+
+Do not add `GEMINI_API_KEY` as a `VITE_*` variable. After adding the bindings, redeploy the feature branch and test **Settings → NutriTrack AI → Test AI service** while signed in with Google.
+
+The Worker uses Firebase's public signing keys to verify ID tokens and checks the token issuer and audience against `FIREBASE_PROJECT_ID`.
+
+**Launch limitation:** this first proxy version authenticates users but does not yet enforce per-user usage quotas, subscription entitlements, or robust abuse/rate limits. Keep the feature branch in testing until usage metering and limits are implemented. Do not treat Google sign-in alone as a paid subscription check.
