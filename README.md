@@ -6,6 +6,10 @@ A mobile-first, installable Progressive Web App for personal calorie and nutriti
 - Node.js 18 or newer
 - A Gemini API key from https://aistudio.google.com/apikey
 
+## Firebase cloud sync
+
+Google sign-in and cross-device cloud synchronization are optional until Firebase is configured. Follow [docs/FIREBASE_SETUP.md](docs/FIREBASE_SETUP.md) and use [`.env.example`](.env.example). Without Firebase settings, the app continues to work in local-only mode.
+
 ## Run locally
 
 ```bash
