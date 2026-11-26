@@ -40,4 +40,25 @@ Do not add `GEMINI_API_KEY` as a `VITE_*` variable. After adding the bindings, r
 
 The Worker uses Firebase's public signing keys to verify ID tokens and checks the token issuer and audience against `FIREBASE_PROJECT_ID`.
 
-**Launch limitation:** this first proxy version authenticates users but does not yet enforce per-user usage quotas, subscription entitlements, or robust abuse/rate limits. Keep the feature branch in testing until usage metering and limits are implemented. Do not treat Google sign-in alone as a paid subscription check.
+## 7. AI usage controls (Cloudflare D1)
+
+The Worker now enforces server-side AI analysis limits. The initial limits are 10 analyses per user per UTC day and 100 per user per UTC calendar month, with a maximum of 6 requests per rolling minute window and a minimum 5-second interval between requests. A submitted analysis attempt reserves quota before calling Gemini, including attempts where Gemini subsequently returns an error. The usage counters are keyed by the authenticated Firebase UID; they are not client-editable.
+
+Create a D1 database and apply the migration:
+
+```bash
+npx wrangler d1 create nutritrack-ai-usage
+npx wrangler d1 migrations apply nutritrack-ai-usage --remote
+```
+
+The create command prints a database ID. Put that exact ID in `wrangler.jsonc` under `d1_databases[0].database_id`, replacing `REPLACE_WITH_D1_DATABASE_ID`. Keep the binding name as `DB` and the migration directory as `migrations`. Commit the real ID in the Wrangler config (the ID is an identifier, not a secret), then allow Cloudflare to deploy the Preview again.
+
+The app calls the authenticated `POST /api/usage` endpoint to display daily and monthly usage. If the D1 binding is missing or the migration has not been applied, meal analysis fails closed with a service-unavailable response; it will not bypass the quota controls.
+
+To inspect the database:
+
+```bash
+npx wrangler d1 execute nutritrack-ai-usage --remote --command "SELECT * FROM ai_usage"
+```
+
+The daily and monthly limits are constants in `src/worker.js` (`DAILY_LIMIT` and `MONTHLY_LIMIT`). Change them only on the server. These controls are a first protective layer, not a complete paid-subscription or enterprise abuse-prevention system. Subscription entitlement checks, payment verification, Firebase token-revocation checks, and broader abuse monitoring remain launch requirements.
