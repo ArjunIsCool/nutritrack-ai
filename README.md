@@ -1,6 +1,6 @@
 # NutriTrack AI
 
-A mobile-first, installable Progressive Web App for personal calorie and nutrition tracking. It uses Gemini for meal estimates and stores profile, meals and weight history in the browser.
+A mobile-first, installable Progressive Web App for personal calorie and nutrition tracking. It uses a Cloudflare Worker to authenticate and proxy Gemini meal-analysis requests, with Firebase Authentication and Firestore for optional account sync.
 
 ## Requirements
 - Node.js 18 or newer
@@ -26,15 +26,16 @@ npm run build
 npm run preview
 ```
 
-Deploy the contents of `dist/` to any static host that supports HTTPS (for example, GitHub Pages with the correct base path, Netlify, or Cloudflare Pages). The app registers a basic service worker and includes a web app manifest.
+Build with `npm run build`. The Cloudflare Workers deployment is configured in `wrangler.jsonc` and serves the Vite `dist/` assets alongside the authenticated `/api/*` Worker routes. The app registers a basic service worker and includes a web app manifest.
 
 ## Important security and data notes
-- This is a client-only personal app. The Gemini API key is saved in browser local storage and is accessible to anyone who can inspect that browser profile. Do not use this architecture for a public multi-user product or a key with sensitive permissions. For a public release, move Gemini requests behind a server-side proxy and keep the key in server environment variables.
-- Meal prompts are sent to Google's Gemini API when you request analysis. Saved meals and profile data remain in this browser unless you export them.
+- Gemini requests are sent through the Cloudflare Worker. Configure `GEMINI_API_KEY` as a Worker Secret and `FIREBASE_PROJECT_ID` as a Worker variable; never put server secrets in `VITE_*` variables.
+- The current Worker verifies Firebase ID tokens but does not yet implement subscription entitlements, per-user usage quotas, or robust abuse/rate limits. Do not launch paid access until those controls and payment verification are implemented.
+- Meal prompts are forwarded to Google's Gemini API when you request analysis. Saved meals and profile data remain in this browser unless you sign in and enable cloud sync.
 - Use **Settings → Export backup** to download a JSON backup. Importing a backup replaces the current profile, meal history and weight history.
 - Clearing browser data, using a different browser or changing devices can make local records unavailable. Keep backups.
 - Gemini nutrition values are estimates, not laboratory measurements or medical advice. Review portions and meal assumptions before saving.
-- The initial model is Gemini 3.8 Flash, with Gemini 3.5 Flash-Lite and Gemini 2.5 Flash also listed as alternatives. Model availability and free-tier eligibility can vary by account and region; choose a currently supported model in Settings if a request is rejected.
+- Available Gemini model IDs are selected in Settings. Model availability and quotas can change; verify the configured model against Google's current Gemini API model list.
 
 ## Features
 - First-run profile setup and configurable calorie goals
