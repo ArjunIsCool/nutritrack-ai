@@ -200,8 +200,16 @@ async function razorpayRequest(env, path, method = "GET", body) {
     method, headers: { Authorization: razorpayAuth(env), "Content-Type": "application/json" },
     ...(body ? { body: JSON.stringify(body) } : {}),
   });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.error?.description || "Razorpay request failed.");
+  const raw = await response.text();
+  let data = {};
+  try { data = raw ? JSON.parse(raw) : {}; } catch {}
+  if (!response.ok) {
+    const apiError = data?.error || data;
+    const description = apiError?.description || apiError?.message || (raw ? raw.slice(0, 500) : "No response body");
+    const code = apiError?.code ? ` [${apiError.code}]` : "";
+    throw new Error(`Razorpay ${method} ${path} failed (HTTP ${response.status})${code}: ${description}`);
+  }
+  if (!data || typeof data !== "object") throw new Error(`Razorpay ${method} ${path} returned an invalid response.`);
   return data;
 }
 async function getOrCreatePlan(env, code) {
@@ -373,7 +381,10 @@ export default {
         const code = body.planCode;
         if (!Object.hasOwn(SUBSCRIPTION_PLANS, code)) return json({ error: "Choose a valid subscription plan." }, 400);
         try { return json({ ok: true, checkout: await createSubscription(env, userId, code) }); }
-        catch (error) { return json({ error: error.message || "Could not start checkout." }, 502); }
+        catch (error) {
+          console.error("Razorpay subscription creation failed", { message: error.message, planCode: code });
+          return json({ error: error.message || "Could not start checkout." }, 502);
+        }
       }
       const row = await env.DB.prepare("SELECT razorpay_subscription_id FROM user_entitlements WHERE user_id = ?").bind(userId).first();
       if (!row?.razorpay_subscription_id) return json({ error: "No subscription is linked to this account." }, 404);
