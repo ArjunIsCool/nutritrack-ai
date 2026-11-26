@@ -5,8 +5,8 @@ const FIREBASE_JWKS = createRemoteJWKSet(
 );
 
 const MODEL_ALLOWLIST = new Set(["gemini-3.8-flash", "gemini-3.5-flash-lite"]);
-const DAILY_LIMIT = 10;
-const MONTHLY_LIMIT = 100;
+const DAILY_LIMIT = 20;
+const MONTHLY_LIMIT = 500;
 const MINUTE_LIMIT = 6;
 const MIN_REQUEST_INTERVAL_MS = 5000;
 const MINUTE_WINDOW_MS = 60_000;
