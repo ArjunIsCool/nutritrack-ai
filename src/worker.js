@@ -192,8 +192,18 @@ async function reserveAnalysis(db, userId, now = Date.now()) {
 function razorpayConfigured(env) {
   return Boolean(env.RAZORPAY_API_KEY && env.RAZORPAY_SECRET);
 }
+function razorpayCredentials(env) {
+  // Cloudflare secrets are supplied as strings. Trim accidental whitespace
+  // before constructing the Basic Auth credential pair.
+  const keyId = String(env.RAZORPAY_API_KEY || "").trim();
+  const keySecret = String(env.RAZORPAY_SECRET || "").trim();
+  if (!keyId || !keySecret) throw new Error("Razorpay API credentials are not configured.");
+  return { keyId, keySecret };
+}
 function razorpayAuth(env) {
-  return "Basic " + btoa(unescape(encodeURIComponent(env.RAZORPAY_API_KEY + ":" + env.RAZORPAY_SECRET)));
+  const { keyId, keySecret } = razorpayCredentials(env);
+  // Razorpay API keys are ASCII; Basic Auth encodes the literal KEY_ID:SECRET pair.
+  return "Basic " + btoa(keyId + ":" + keySecret);
 }
 async function razorpayRequest(env, path, method = "GET", body) {
   const response = await fetch(`${RAZORPAY_API}${path}`, {
