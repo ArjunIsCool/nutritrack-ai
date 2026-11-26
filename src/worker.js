@@ -219,6 +219,10 @@ async function getOrCreatePlan(env, code) {
   return saved.razorpay_plan_id;
 }
 async function createSubscription(env, userId, code) {
+  const access = await getAccess(env.DB, userId);
+  if (access.status === "trialing" || access.status === "active") throw new Error("Your account already has premium access.");
+  const pending = await env.DB.prepare("SELECT provider_subscription_id FROM trial_claims WHERE user_id = ? AND status = 'pending' ORDER BY created_at DESC LIMIT 1").bind(userId).first();
+  if (pending) throw new Error("A subscription authorization is already pending for this account. Complete or wait for that checkout first.");
   const config = SUBSCRIPTION_PLANS[code];
   const planId = await getOrCreatePlan(env, code);
   const now = Math.floor(Date.now() / 1000);
