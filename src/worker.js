@@ -229,7 +229,7 @@ async function createSubscription(env, userId, code) {
   const startAt = now + 3 * 24 * 60 * 60;
   const subscription = await razorpayRequest(env, "/subscriptions", "POST", {
     plan_id: planId, total_count: config.totalCount, quantity: 1,
-    customer_notify: 1, start_at: startAt, expire_by: now + 24 * 60 * 60,
+    customer_notify: true, start_at: startAt, expire_by: now + 24 * 60 * 60,
     notes: { user_id: userId, plan_code: code, trial_days: "3" },
   });
   await env.DB.prepare("INSERT INTO trial_claims (id, user_id, provider, provider_subscription_id, started_at, ends_at, status, created_at) VALUES (?, ?, 'razorpay', ?, ?, ?, 'pending', ?)")
