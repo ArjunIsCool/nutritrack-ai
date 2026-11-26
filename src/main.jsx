@@ -11,7 +11,6 @@ const today = () => new Date().toISOString().slice(0,10);
 const seedProfile = { age: 21, sex: 'male', height: 175, weight: 70, targetWeight: 65, activity: 'moderate', goal: 'lose', pace: 0.25 };
 const seedMeals = [];
 const read = (key, fallback) => { try { const value = localStorage.getItem(key); return value ? JSON.parse(value) : fallback; } catch { return fallback; } };
-const write = (key, value) => localStorage.setItem(key, JSON.stringify(value));
 const fmt = n => Math.round(Number(n)||0).toLocaleString('en-IN');
 const calcTargets = p => {
   const bmr = 10*p.weight + 6.25*p.height - 5*p.age + 5;
@@ -29,10 +28,10 @@ const demoMeals = [
 ];
 
 function App(){
-  const [profile,setProfile] = useState(()=>read('nt_profile',seedProfile));
-  const [meals,setMeals] = useState(()=>read('nt_meals',seedMeals));
-  const [weights,setWeights] = useState(()=>read('nt_weights',[]));
-  const [model,setModel] = useState(()=>localStorage.getItem('nt_model')||'gemini-3.5-flash-lite');
+  const [profile,setProfile] = useState(seedProfile);
+  const [meals,setMeals] = useState(seedMeals);
+  const [weights,setWeights] = useState([]);
+  const [model,setModel] = useState('gemini-3.5-flash-lite');
   const [page,setPage] = useState('Dashboard');
   const [prompt,setPrompt] = useState('');
   const [category,setCategory] = useState('Meal');
@@ -40,7 +39,7 @@ function App(){
   const [error,setError] = useState('');
   const [notice,setNotice] = useState('');
   const [draft,setDraft] = useState(null);
-  const [showSetup,setShowSetup] = useState(()=>!read('nt_setup_done',false));
+  const [showSetup,setShowSetup] = useState(false);
   const [mobileNav,setMobileNav] = useState(false);
   const [editingProfile,setEditingProfile] = useState(false);
   const [weightInput,setWeightInput] = useState('');
@@ -52,14 +51,13 @@ function App(){
   const [authError,setAuthError] = useState('');
   const [aiUsage,setAiUsage] = useState(null);
   const [usageLoading,setUsageLoading] = useState(false);
+  const [access,setAccess] = useState(null);
+  const [demoUsage,setDemoUsage] = useState(null);
   const targets = useMemo(()=>calcTargets(profile),[profile]);
   const todayMeals = meals.filter(m=>m.date===today());
   const totals = todayMeals.reduce((a,m)=>({calories:a.calories+(+m.calories||0),protein:a.protein+(+m.protein||0),carbs:a.carbs+(+m.carbs||0),fat:a.fat+(+m.fat||0),fiber:a.fiber+(+m.fiber||0)}),{calories:0,protein:0,carbs:0,fat:0,fiber:0});
   const remaining = targets.calories-totals.calories;
   const progress = Math.min(100,totals.calories/targets.calories*100);
-  useEffect(()=>write('nt_profile',profile),[profile]);
-  useEffect(()=>write('nt_meals',meals),[meals]);
-  useEffect(()=>write('nt_weights',weights),[weights]);
   useEffect(() => {
     if (!firebaseConfigured || !auth) { setAuthLoading(false); return undefined; }
     return onAuthStateChanged(auth, (user) => {
@@ -84,13 +82,28 @@ function App(){
         if (cloud.weights) setWeights(cloud.weights);
         setMeals(cloud.meals);
       } else {
-        await saveCloudData(authUser.uid, { profile, weights, meals });
+        // One-time migration for existing local-only users. After this upload,
+        // Firestore becomes the source of truth and local persistence is disabled.
+        const legacyProfile = read('nt_profile', null);
+        const legacyMeals = read('nt_meals', null);
+        const legacyWeights = read('nt_weights', null);
+        const migratedProfile = legacyProfile || profile;
+        const migratedMeals = Array.isArray(legacyMeals) ? legacyMeals : meals;
+        const migratedWeights = Array.isArray(legacyWeights) ? legacyWeights : weights;
+        if (legacyProfile) setProfile(legacyProfile);
+        if (Array.isArray(legacyMeals)) setMeals(legacyMeals);
+        if (Array.isArray(legacyWeights)) setWeights(legacyWeights);
+        await saveCloudData(authUser.uid, { profile: migratedProfile, meals: migratedMeals, weights: migratedWeights });
+        localStorage.removeItem('nt_profile');
+        localStorage.removeItem('nt_meals');
+        localStorage.removeItem('nt_weights');
+        localStorage.removeItem('nt_setup_done');
       }
       if (active) { setCloudReady(true); setSyncStatus('synced'); }
     }).catch((error) => {
       if (active) {
         setSyncStatus('error');
-        setAuthError(error.message || 'Cloud sync failed. Your local data is still available.');
+        setAuthError(error.message || 'Cloud sync failed. Your account data is still available.');
       }
     });
     return () => { active = false; };
@@ -105,31 +118,37 @@ function App(){
         .then(() => setSyncStatus('synced'))
         .catch((error) => {
           setSyncStatus('error');
-          setAuthError(error.message || 'Could not save to cloud. Your local data remains available.');
+          setAuthError(error.message || 'Could not save to cloud. Your account data remains available.');
         });
     }, 900);
     return () => clearTimeout(timer);
   }, [authUser, cloudReady, profile, weights, meals]);
   useEffect(() => {
-    if (!authUser) { setAiUsage(null); return undefined; }
+    if (!authUser) { setAiUsage(null); setAccess(null); setDemoUsage(null); return undefined; }
     let active = true;
     setUsageLoading(true);
-    authUser.getIdToken().then(token => fetch('/api/usage', {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({}),
-    })).then(async response => {
-      const data = await response.json();
-      if (!response.ok) throw new Error(data?.error || 'Could not load AI usage.');
-      if (active) setAiUsage(data.usage);
+    authUser.getIdToken().then(async token => {
+      const headers = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
+      const [accessResponse, usageResponse] = await Promise.all([
+        fetch('/api/access', { method: 'POST', headers, body: JSON.stringify({}) }),
+        fetch('/api/usage', { method: 'POST', headers, body: JSON.stringify({}) }),
+      ]);
+      const accessData = await accessResponse.json();
+      if (!accessResponse.ok) throw new Error(accessData?.error || 'Could not load account access.');
+      const usageData = usageResponse.ok ? await usageResponse.json() : null;
+      if (active) {
+        setAccess(accessData.access);
+        setDemoUsage(accessData.demoUsage);
+        setAiUsage(usageData?.usage || null);
+      }
     }).catch(() => {
-      if (active) setAiUsage(null);
+      if (active) { setAiUsage(null); setAccess(null); setDemoUsage(null); }
     }).finally(() => {
       if (active) setUsageLoading(false);
     });
     return () => { active = false; };
   }, [authUser?.uid]);
-  useEffect(()=>{ localStorage.removeItem('nt_gemini_key'); },[]);
+
   useEffect(()=>{ if('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(()=>{}); },[]);
   useEffect(()=>{ if(notice){const t=setTimeout(()=>setNotice(''),3200);return()=>clearTimeout(t);} },[notice]);
 
@@ -148,21 +167,25 @@ function App(){
   const handleSignOut = async () => {
     if (!auth) return;
     try {
-      await signOut(auth);
       setCloudReady(false);
+      await signOut(auth);
       setSyncStatus('local');
-      setNotice('Signed out. Your local browser copy is still available.');
+      setProfile(seedProfile); setMeals([]); setWeights([]); setAiUsage(null); setAccess(null); setDemoUsage(null);
+      setNotice('Signed out.');
     } catch (error) { setAuthError(error.message || 'Could not sign out.'); }
   };
   const analyzeMeal = async () => {
     if(!prompt.trim()) return;
-    if(!authUser){setError('Sign in with Google in Settings to use AI meal analysis.');setPage('Settings');return;}
+    if(!authUser){setError('Sign in to use AI meal analysis.');return;}
     setBusy(true);setError('');setDraft(null);
     try{
       const token=await authUser.getIdToken();
-      const res=await fetch('/api/meal-analysis',{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${token}`},body:JSON.stringify({prompt,category,model})});
+      const demoMode = access?.status !== 'trialing' && access?.status !== 'active';
+      const endpoint = demoMode ? '/api/demo-analysis' : '/api/meal-analysis';
+      const res=await fetch(endpoint,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${token}`},body:JSON.stringify({prompt,category,model})});
       const data=await res.json();
       if (data?.usage) setAiUsage(data.usage);
+      if (data?.demoUsage) setDemoUsage(data.demoUsage);
       if(!res.ok) {
         const retry = data?.retryAfter ? ` Try again in about ${data.retryAfter} seconds.` : '';
         throw new Error((data?.error||`Meal analysis failed (${res.status})`) + retry);
@@ -193,6 +216,9 @@ function App(){
   const nav=[['Dashboard',Home],['AI Food Logger',MessageSquareText],['Meal History',History],['Analytics',BarChart3],['Goals',Target],['Settings',Settings]];
   const chartData=Array.from({length:7},(_,i)=>{const d=new Date();d.setDate(d.getDate()-(6-i));const key=d.toISOString().slice(0,10);return {day:d.toLocaleDateString('en',{weekday:'short'}),calories:meals.filter(m=>m.date===key).reduce((s,m)=>s+(+m.calories||0),0)};});
   const displayMeals=showAll?meals:meals.slice(0,5);
+  if (authLoading) return <div className="auth-gate"><div className="auth-gate-card"><div className="brand-mark"><Apple size={23}/></div><h1>NutriTrack <span>AI</span></h1><p>Checking your account…</p><LoaderCircle className="spin" size={22}/></div></div>;
+  if (authUser && !cloudReady) return <div className="auth-gate"><div className="auth-gate-card"><div className="brand-mark"><Apple size={23}/></div><h1>NutriTrack <span>AI</span></h1>{syncStatus === 'error' ? <><p>We couldn't load your account data. Your account has not been switched to local storage.</p><div className="error-box">{authError || 'Cloud data could not be loaded.'}</div><button className="secondary-btn" onClick={()=>window.location.reload()}>Retry</button></> : <><p>Loading your secure account data…</p><LoaderCircle className="spin" size={22}/></>}</div></div>;
+  if (!authUser) return <div className="auth-gate"><div className="auth-gate-card"><div className="brand-mark"><Apple size={23}/></div><div className="setup-step">YOUR DAILY NUTRITION COMPANION</div><h1>NutriTrack <span>AI</span></h1><p>Create an account or sign in to securely save your nutrition profile, meals and progress across devices.</p>{authError&&<div className="error-box">{authError}</div>}<button className="primary-btn full-btn" onClick={handleGoogleSignIn} disabled={authLoading||!firebaseConfigured}>{authLoading?<LoaderCircle className="spin" size={17}/>:<ShieldCheck size={17}/>} Continue with Google</button>{!firebaseConfigured&&<small>Sign-in is temporarily unavailable while account services are configured.</small>}<div className="auth-benefits"><span><Check size={14}/> Five free AI demo analyses</span><span><Check size={14}/> Your data saved to your account</span><span><Check size={14}/> Optional three-day premium trial</span></div></div></div>;
   return <div className="app-shell">
     <aside className={`sidebar ${mobileNav?'open':''}`}>
       <div className="brand"><div className="brand-mark"><Apple size={21}/></div><div><strong>NutriTrack <span>AI</span></strong><small>YOUR DAILY NUTRITION</small></div><button className="mobile-close icon-btn" onClick={()=>setMobileNav(false)}><X size={18}/></button></div>
@@ -215,7 +241,7 @@ function App(){
             <div className="card quick-card"><div className="section-head"><div><h3>Quick actions</h3><p>Keep your routine moving</p></div><MoreHorizontal size={18} className="muted"/></div><button className="quick-action" onClick={()=>setPage('AI Food Logger')}><div className="quick-icon green"><MessageSquareText size={18}/></div><div><b>Log a meal with AI</b><small>Describe what you ate</small></div><ChevronRight size={17}/></button><button className="quick-action" onClick={()=>setPage('Goals')}><div className="quick-icon violet"><Scale size={18}/></div><div><b>Update your weight</b><small>Keep your progress current</small></div><ChevronRight size={17}/></button><button className="quick-action" onClick={()=>setPage('Analytics')}><div className="quick-icon orange"><BarChart3 size={18}/></div><div><b>Review your trends</b><small>See your nutrition patterns</small></div><ChevronRight size={17}/></button></div></section>
           <section className="card recent-card"><div className="section-head"><div><h3>Recent meals</h3><p>Your latest food entries</p></div><button className="text-btn" onClick={()=>setPage('Meal History')}>View history <ChevronRight size={14}/></button></div>{displayMeals.length===0?<EmptyState icon={Utensils} title="No meals logged yet" desc="Your meals will appear here once you start tracking." action="Log your first meal" onClick={()=>setPage('AI Food Logger')}/>:<div className="meal-list">{displayMeals.map(m=><MealRow key={m.id} meal={m} onDelete={removeMeal}/>)}</div>}</section>
         </>}
-        {page==='AI Food Logger'&&<><div className="page-intro"><div className="ai-badge"><Sparkles size={14}/> GEMINI-POWERED MEAL ANALYSIS</div><h2>What did you eat?</h2><p>Describe your meal naturally. NutriTrack will estimate the nutrition and explain the meal quality.</p></div><div className="logger-layout"><div className="card logger-card"><div className="logger-top"><div className="logger-icon"><Sparkles size={20}/></div><div><b>AI meal assistant</b><small>Nutrition estimates, made simple</small></div><span className="secure-label"><ShieldCheck size={13}/> Private log</span></div>{authUser&&<div className="field-help">{usageLoading?'Loading AI usage…':aiUsage?`AI analyses: ${aiUsage.daily.used}/${aiUsage.daily.limit} today · ${aiUsage.monthly.used}/${aiUsage.monthly.limit} this month`:'AI usage information is temporarily unavailable.'}</div>}<label className="field-label">MEAL TYPE</label><div className="meal-types">{['Breakfast','Lunch','Dinner','Snack'].map(x=><button key={x} className={category===x?'selected':''} onClick={()=>setCategory(x)}>{x==='Breakfast'?<Coffee size={15}/>:x==='Snack'?<Apple size={15}/>:<Utensils size={15}/>} {x}</button>)}</div><label className="field-label" htmlFor="meal-prompt">DESCRIBE YOUR MEAL</label><textarea id="meal-prompt" value={prompt} onChange={e=>setPrompt(e.target.value)} placeholder="e.g. I had 2 medium dosas, one bowl of sambar and 2 tablespoons of coconut chutney..." rows={5}/><div className="prompt-hint"><CircleHelp size={14}/> Include portion sizes and cooking methods for better estimates.</div>{error&&<div className="error-box"><X size={15}/>{error}</div>}<button className="primary-btn full-btn" onClick={analyzeMeal} disabled={busy||!prompt.trim()||(!!aiUsage&&(aiUsage.daily.remaining<=0||aiUsage.monthly.remaining<=0))}>{busy?<><LoaderCircle className="spin" size={17}/> Analysing your meal...</>:<><Sparkles size={17}/> Analyse meal</>}</button><div className="privacy-note"><ShieldCheck size={14}/> Your prompt is sent to Google Gemini for analysis. Saved meal records stay on this device and sync to your account when signed in.</div></div><div className="card tips-card"><div className="tips-icon"><Zap size={18}/></div><h3>Get better estimates</h3><ul><li>Mention the number of pieces or serving size.</li><li>Include oil, ghee, butter or sauces when you can.</li><li>Say whether food was homemade or restaurant-prepared.</li></ul><div className="example-prompt"><small>EXAMPLE PROMPT</small><p>“2 homemade chapatis, 1 cup dal tadka with 1 tsp ghee, and a small bowl of cucumber raita.”</p></div></div></div>{draft&&<div className="card draft-card"><div className="section-head"><div><div className="ai-badge"><Sparkles size={13}/> AI ESTIMATE</div><h3>{draft.meal_name||'Meal breakdown'}</h3><p>Review the estimate before saving.</p></div><button className="icon-btn" onClick={()=>setDraft(null)}><X size={18}/></button></div>{draft.needs_clarification&&<div className="warning-box"><CircleHelp size={16}/><div><b>One detail could improve accuracy</b><p>{draft.clarifying_question}</p></div></div>}<div className="draft-total"><strong>{fmt(draft.totals?.calories)}</strong><span>kcal estimated</span><span className="quality-pill">{draft.quality||'Estimated'}</span></div><div className="draft-macros">{[['Protein',draft.totals?.protein,'blue'],['Carbs',draft.totals?.carbs,'yellow'],['Fat',draft.totals?.fat,'purple'],['Fibre',draft.totals?.fiber,'green']].map(([n,v,c])=><div key={n}><span>{n}</span><b>{fmt(v)}g</b></div>)}</div><div className="food-breakdown">{(draft.items||[]).map((it,i)=><div className="food-line" key={i}><div><b>{it.name}</b><small>{fmt(it.protein)}g protein · {fmt(it.carbs)}g carbs · {fmt(it.fat)}g fat</small></div><strong>{fmt(it.calories)} <small>kcal</small></strong></div>)}</div><div className="assessment"><div><HeartPulse size={17}/> Meal quality assessment</div><p>{draft.assessment}</p>{draft.assumptions?.length>0&&<small>Assumptions: {draft.assumptions.join('; ')}</small>}</div><div className="draft-actions"><button className="secondary-btn" onClick={()=>setDraft(null)}>Discard</button><button className="primary-btn" onClick={saveMeal}><Check size={17}/> Save meal to diary</button></div></div>}</>}
+        {page==='AI Food Logger'&&<><div className="page-intro"><div className="ai-badge"><Sparkles size={14}/> GEMINI-POWERED MEAL ANALYSIS</div><h2>What did you eat?</h2><p>Describe your meal naturally. NutriTrack will estimate the nutrition and explain the meal quality.</p></div><div className="logger-layout"><div className="card logger-card"><div className="logger-top"><div className="logger-icon"><Sparkles size={20}/></div><div><b>AI meal assistant</b><small>Nutrition estimates, made simple</small></div><span className="secure-label"><ShieldCheck size={13}/> Private log</span></div>{access?.status === 'trialing' || access?.status === 'active' ? <div className="field-help">{usageLoading?'Loading AI usage…':aiUsage?`AI analyses: ${aiUsage.daily.used}/${aiUsage.daily.limit} today · ${aiUsage.monthly.used}/${aiUsage.monthly.limit} this month`:'AI usage information is temporarily unavailable.'}</div> : <div className="demo-meter"><b>{demoUsage?.remaining ?? '—'} of 5 free demo analyses remaining</b><small>Try NutriTrack before starting your card-verified 3-day trial.</small></div>}<label className="field-label">MEAL TYPE</label><div className="meal-types">{['Breakfast','Lunch','Dinner','Snack'].map(x=><button key={x} className={category===x?'selected':''} onClick={()=>setCategory(x)}>{x==='Breakfast'?<Coffee size={15}/>:x==='Snack'?<Apple size={15}/>:<Utensils size={15}/>} {x}</button>)}</div><label className="field-label" htmlFor="meal-prompt">DESCRIBE YOUR MEAL</label><textarea id="meal-prompt" value={prompt} onChange={e=>setPrompt(e.target.value)} placeholder="e.g. I had 2 medium dosas, one bowl of sambar and 2 tablespoons of coconut chutney..." rows={5}/><div className="prompt-hint"><CircleHelp size={14}/> Include portion sizes and cooking methods for better estimates.</div>{error&&<div className="error-box"><X size={15}/>{error}</div>}<button className="primary-btn full-btn" onClick={analyzeMeal} disabled={busy||!prompt.trim()||(access?.status !== 'trialing' && access?.status !== 'active' && !!demoUsage && demoUsage.remaining<=0)||((access?.status === 'trialing'||access?.status === 'active')&&!!aiUsage&&(aiUsage.daily.remaining<=0||aiUsage.monthly.remaining<=0))}>{busy?<><LoaderCircle className="spin" size={17}/> Analysing your meal...</>:<><Sparkles size={17}/> Analyse meal</>}</button><div className="privacy-note"><ShieldCheck size={14}/> Your prompt is sent to Google Gemini for analysis. Your saved meal records sync to your account.</div></div><div className="card tips-card"><div className="tips-icon"><Zap size={18}/></div><h3>Get better estimates</h3><ul><li>Mention the number of pieces or serving size.</li><li>Include oil, ghee, butter or sauces when you can.</li><li>Say whether food was homemade or restaurant-prepared.</li></ul><div className="example-prompt"><small>EXAMPLE PROMPT</small><p>“2 homemade chapatis, 1 cup dal tadka with 1 tsp ghee, and a small bowl of cucumber raita.”</p></div></div></div>{draft&&<div className="card draft-card"><div className="section-head"><div><div className="ai-badge"><Sparkles size={13}/> AI ESTIMATE</div><h3>{draft.meal_name||'Meal breakdown'}</h3><p>Review the estimate before saving.</p></div><button className="icon-btn" onClick={()=>setDraft(null)}><X size={18}/></button></div>{draft.needs_clarification&&<div className="warning-box"><CircleHelp size={16}/><div><b>One detail could improve accuracy</b><p>{draft.clarifying_question}</p></div></div>}<div className="draft-total"><strong>{fmt(draft.totals?.calories)}</strong><span>kcal estimated</span><span className="quality-pill">{draft.quality||'Estimated'}</span></div><div className="draft-macros">{[['Protein',draft.totals?.protein,'blue'],['Carbs',draft.totals?.carbs,'yellow'],['Fat',draft.totals?.fat,'purple'],['Fibre',draft.totals?.fiber,'green']].map(([n,v,c])=><div key={n}><span>{n}</span><b>{fmt(v)}g</b></div>)}</div><div className="food-breakdown">{(draft.items||[]).map((it,i)=><div className="food-line" key={i}><div><b>{it.name}</b><small>{fmt(it.protein)}g protein · {fmt(it.carbs)}g carbs · {fmt(it.fat)}g fat</small></div><strong>{fmt(it.calories)} <small>kcal</small></strong></div>)}</div><div className="assessment"><div><HeartPulse size={17}/> Meal quality assessment</div><p>{draft.assessment}</p>{draft.assumptions?.length>0&&<small>Assumptions: {draft.assumptions.join('; ')}</small>}</div><div className="draft-actions"><button className="secondary-btn" onClick={()=>setDraft(null)}>Discard</button><button className="primary-btn" onClick={saveMeal}><Check size={17}/> Save meal to diary</button></div></div>}</>}
         {page==='Meal History'&&<><div className="page-intro"><h2>Your food diary</h2><p>Every meal, in one place. Review and manage your nutrition history.</p></div><div className="card history-card"><div className="section-head"><div><h3>All meals</h3><p>{meals.length} meals recorded on this device</p></div><button className="primary-btn small-btn" onClick={()=>setPage('AI Food Logger')}><Plus size={16}/> Add meal</button></div>{meals.length===0?<EmptyState icon={History} title="Your diary is empty" desc="Start by logging your first meal with AI." action="Log a meal" onClick={()=>setPage('AI Food Logger')}/>:<div className="meal-list">{meals.map(m=><MealRow key={m.id} meal={m} onDelete={removeMeal} showDate/>)}</div>}</div></>}
         {page==='Analytics'&&<><div className="page-intro"><h2>Your nutrition insights</h2><p>Look beyond individual meals and understand your habits over time.</p></div><div className="stats-grid analytics-stats"><StatCard icon={Flame} label="TODAY'S INTAKE" value={`${fmt(totals.calories)} kcal`} sub={`${Math.round(progress)}% of daily goal`} color="orange"/><StatCard icon={Activity} label="PROTEIN TODAY" value={`${fmt(totals.protein)} g`} sub={`Target ${targets.protein} g`} color="green"/><StatCard icon={CalendarDays} label="MEALS LOGGED" value={todayMeals.length} sub="Today" color="violet"/></div><div className="card chart-card analytics-chart"><div className="section-head"><div><h3>Daily calorie intake</h3><p>Last seven days</p></div><span className="chart-legend"><i/> Calories</span></div><div className="chart-wrap tall"><ResponsiveContainer width="100%" height="100%"><AreaChart data={chartData} margin={{top:12,right:10,left:-18,bottom:0}}><defs><linearGradient id="anaFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#a7d96b" stopOpacity={.25}/><stop offset="95%" stopColor="#a7d96b" stopOpacity={0}/></linearGradient></defs><CartesianGrid stroke="#292e27" strokeDasharray="3 5" vertical={false}/><XAxis dataKey="day" axisLine={false} tickLine={false} tick={{fill:'#858d7e',fontSize:12}} dy={10}/><YAxis axisLine={false} tickLine={false} tick={{fill:'#858d7e',fontSize:11}}/><Tooltip contentStyle={{background:'#20251e',border:'1px solid #343c30',borderRadius:10,color:'#f4f5ef'}}/><Area type="monotone" dataKey="calories" stroke="#a7d96b" strokeWidth={2.5} fill="url(#anaFill)"/></AreaChart></ResponsiveContainer></div></div><div className="card insight-card"><div className="insight-icon"><Sparkles size={18}/></div><div><b>Build a useful baseline</b><p>Log meals consistently for at least 7–14 days. Your trend data will become more informative as you build a history.</p></div></div></>}
         {page==='Goals'&&<><div className="page-intro"><h2>Your goals, your pace</h2><p>Set a realistic target. Your daily nutrition budget updates automatically.</p></div><div className="goals-layout"><div className="card goal-form"><div className="section-head"><div><h3>Personal profile & goals</h3><p>Used to estimate your energy needs</p></div><button className="text-btn" onClick={()=>setEditingProfile(!editingProfile)}>{editingProfile?'Cancel':'Edit details'}</button></div><div className="profile-grid"><NumberField label="Age" value={profile.age} suffix="years" disabled={!editingProfile} onChange={v=>setProfile(p=>({...p,age:+v}))}/><NumberField label="Height" value={profile.height} suffix="cm" disabled={!editingProfile} onChange={v=>setProfile(p=>({...p,height:+v}))}/><NumberField label="Current weight" value={profile.weight} suffix="kg" disabled={!editingProfile} onChange={v=>setProfile(p=>({...p,weight:+v}))}/><NumberField label="Target weight" value={profile.targetWeight} suffix="kg" disabled={!editingProfile} onChange={v=>setProfile(p=>({...p,targetWeight:+v}))}/></div>{editingProfile&&<button className="primary-btn" onClick={saveProfile}>Save profile</button>}<div className="form-divider"/><label className="field-label">YOUR OBJECTIVE</label><div className="goal-options">{[['lose','Lose weight',ArrowDownRight],['maintain','Maintain',Scale],['gain','Gain weight',ArrowUpRight]].map(([v,l,I])=><button key={v} className={profile.goal===v?'chosen':''} onClick={()=>setProfile(p=>({...p,goal:v}))}><I size={18}/><b>{l}</b></button>)}</div><label className="field-label">ACTIVITY LEVEL</label><select value={profile.activity} onChange={e=>setProfile(p=>({...p,activity:e.target.value}))}><option value="sedentary">Sedentary – little or no exercise</option><option value="light">Light – exercise 1–3 days/week</option><option value="moderate">Moderate – exercise 3–5 days/week</option><option value="high">Very active – hard exercise most days</option></select>{profile.goal!=='maintain'&&<><label className="field-label">DESIRED WEEKLY CHANGE</label><div className="pace-options">{[0.25,0.5,0.75].map(v=><button key={v} className={profile.pace===v?'chosen':''} onClick={()=>setProfile(p=>({...p,pace:v}))}><b>{v} kg</b><small>per week</small></button>)}</div></>}<div className="form-divider"/><label className="field-label">WEIGHT CHECK-IN</label><div className="weight-entry"><input type="number" step="0.1" placeholder="Today's weight in kg" value={weightInput} onChange={e=>setWeightInput(e.target.value)}/><button className="secondary-btn" onClick={saveWeight}>Save weight</button></div></div><div className="goals-side"><div className="card target-card"><div className="metric-icon green"><Target size={18}/></div><span>ESTIMATED DAILY CALORIE TARGET</span><strong>{fmt(targets.calories)}</strong><small>kcal per day</small><div className="target-row"><span>Estimated BMR</span><b>{fmt(targets.bmr)} kcal</b></div><div className="target-row"><span>Estimated TDEE</span><b>{fmt(targets.tdee)} kcal</b></div><div className="target-row"><span>Goal adjustment</span><b>{profile.goal==='maintain'?'0':`${profile.goal==='lose'?'−':'+'}${fmt(profile.pace*7700/7)} kcal`}</b></div></div><div className="card macro-target-card"><h3>Suggested macro targets</h3><p>Starting estimates to support your goal.</p>{[['Protein',targets.protein,'blue'],['Carbohydrates',targets.carbs,'yellow'],['Fat',targets.fat,'purple']].map(([n,v,c])=><div className="target-row" key={n}><span><i className={`dot ${c}`}/>{n}</span><b>{v} g</b></div>)}</div><div className="safety-note"><ShieldCheck size={17}/><p>These are estimates, not medical advice. Actual needs vary. Avoid aggressive weight changes and consult a qualified professional if you have medical or dietary concerns.</p></div></div></div></>}
@@ -229,15 +255,15 @@ function App(){
               <button className="secondary-btn" onClick={handleSignOut}><LogOut size={15}/> Sign out</button>
             </> : <button className="primary-btn" onClick={handleGoogleSignIn} disabled={authLoading || !firebaseConfigured}>{authLoading ? <LoaderCircle className="spin" size={16}/> : <ShieldCheck size={16}/>} Continue with Google</button>}
             {authError && <div className="error-box">{authError}</div>}
-            <div className="field-help">On first sign-in, existing browser data is uploaded if the account has no cloud history. Existing cloud history is loaded onto this device.</div>
+            <div className="field-help">Your account is the source of truth for your nutrition data.</div>
           </div>
-          <div className="card settings-card"><div className="settings-title"><div className="settings-icon gemini"><Sparkles size={19}/></div><div><h3>NutriTrack AI</h3><p>Managed Gemini service for meal analysis.</p></div><span className="connected-dot"/></div><div className="field-help">AI requests are securely sent through NutriTrack's server. Your API key is never stored in this browser.</div><label className="field-label">GEMINI MODEL</label><select value={model} onChange={e=>{setModel(e.target.value);localStorage.setItem('nt_model',e.target.value);}}><option value="gemini-3.5-flash-lite">Gemini 3.5 Flash-Lite · lower cost</option><option value="gemini-3.8-flash">Gemini 3.8 Flash</option></select><div className="settings-actions"><button className="secondary-btn" onClick={testConnection} disabled={busy||!authUser}>{busy?<LoaderCircle className="spin" size={15}/>:<Zap size={15}/>} Test AI service</button></div>{!authUser&&<div className="field-help">Sign in with Google in the Account & cloud sync section to use AI.</div>}{error&&<div className="error-box">{error}</div>}</div>
-          <div className="card settings-card"><div className="settings-title"><div className="settings-icon"><Wallet size={19}/></div><div><h3>Data & backups</h3><p>Your meals and profile are stored locally and, when signed in, synchronized to your cloud account.</p></div></div><div className="storage-info"><div><b>{meals.length}</b><small>Meals stored</small></div><div><b>{weights.length}</b><small>Weight entries</small></div><div><b>{authUser ? (syncStatus === 'synced' ? 'Cloud' : 'Pending') : 'Local'}</b><small>Storage mode</small></div></div><button className="backup-action" onClick={exportData}><CloudDownload size={17}/><div><b>Export backup</b><small>Download profile, meals and weight history as JSON</small></div><ChevronRight size={16}/></button><label className="backup-action import-label"><CloudDownload size={17}/><div><b>Import backup</b><small>Restore from a NutriTrack JSON backup</small></div><ChevronRight size={16}/><input type="file" accept="application/json,.json" onChange={importData}/></label><div className="field-help">Import replaces the current profile and history. Export regularly to avoid losing data if you clear browser storage or change devices.</div></div>
-          <div className="card settings-card"><div className="settings-title"><div className="settings-icon"><ShieldCheck size={19}/></div><div><h3>Privacy & security</h3><p>Understand where your information goes.</p></div></div><div className="privacy-list"><p><Check size={15}/> Meal history and goals stay in this browser and sync to your account when signed in.</p><p><Check size={15}/> Only meal prompts are sent to Gemini when you request analysis.</p><p><Check size={15}/> Google sign-in is optional; local-only mode remains available.</p><p><Check size={15}/> Gemini credentials are kept on the server and are not exposed in the browser.</p></div><button className="danger-btn" onClick={()=>{if(confirm('Delete all NutriTrack meals, profile and weight history from this browser? This cannot be undone unless you have a backup.')){localStorage.removeItem('nt_meals');localStorage.removeItem('nt_profile');localStorage.removeItem('nt_weights');setMeals([]);setWeights([]);setProfile(seedProfile);setNotice('Local app data cleared.');}}}><Trash2 size={15}/> Clear app data</button></div></div></>}
+          <div className="card settings-card"><div className="settings-title"><div className="settings-icon gemini"><Sparkles size={19}/></div><div><h3>NutriTrack AI</h3><p>Managed Gemini service for meal analysis.</p></div><span className="connected-dot"/></div><div className="field-help">AI requests are securely sent through NutriTrack's server. Your API key is never stored in this browser.</div><label className="field-label">GEMINI MODEL</label><select value={model} onChange={e=>{setModel(e.target.value);}}><option value="gemini-3.5-flash-lite">Gemini 3.5 Flash-Lite · lower cost</option><option value="gemini-3.8-flash">Gemini 3.8 Flash</option></select><div className="settings-actions"><button className="secondary-btn" onClick={testConnection} disabled={busy||!authUser}>{busy?<LoaderCircle className="spin" size={15}/>:<Zap size={15}/>} Test AI service</button></div>{!authUser&&<div className="field-help">Sign in with Google in the Account & cloud sync section to use AI.</div>}{error&&<div className="error-box">{error}</div>}</div>
+          <div className="card settings-card"><div className="settings-title"><div className="settings-icon"><Wallet size={19}/></div><div><h3>Data & backups</h3><p>Your meals and profile are stored in your cloud account.</p></div></div><div className="storage-info"><div><b>{meals.length}</b><small>Meals stored</small></div><div><b>{weights.length}</b><small>Weight entries</small></div><div><b>{authUser ? (syncStatus === 'synced' ? 'Cloud' : 'Pending') : 'Local'}</b><small>Storage mode</small></div></div><button className="backup-action" onClick={exportData}><CloudDownload size={17}/><div><b>Export backup</b><small>Download profile, meals and weight history as JSON</small></div><ChevronRight size={16}/></button><label className="backup-action import-label"><CloudDownload size={17}/><div><b>Import backup</b><small>Restore from a NutriTrack JSON backup</small></div><ChevronRight size={16}/><input type="file" accept="application/json,.json" onChange={importData}/></label><div className="field-help">Import replaces your account profile and history. Export backups regularly.</div></div>
+          <div className="card settings-card"><div className="settings-title"><div className="settings-icon"><ShieldCheck size={19}/></div><div><h3>Privacy & security</h3><p>Understand where your information goes.</p></div></div><div className="privacy-list"><p><Check size={15}/> Meal history and goals are stored in your authenticated cloud account.</p><p><Check size={15}/> Only meal prompts are sent to Gemini when you request analysis.</p><p><Check size={15}/> An account is required to access NutriTrack AI.</p><p><Check size={15}/> Gemini credentials are kept on the server and are not exposed in the browser.</p></div><button className="danger-btn" onClick={()=>{if(confirm('Delete all NutriTrack meals, profile and weight history from your account? This cannot be undone unless you have a backup.')){setMeals([]);setWeights([]);setProfile(seedProfile);setNotice('Account data cleared.');}}}><Trash2 size={15}/> Clear app data</button></div></div></>}
       </div>
       <footer className="footer"><span>© {new Date().getFullYear()} NutriTrack AI</span><span>Made for mindful everyday nutrition <HeartPulse size={13}/></span></footer>
     </main>
-    {showSetup&&<div className="modal-backdrop"><div className="setup-modal"><div className="setup-brand"><div className="brand-mark"><Apple size={22}/></div><span>NutriTrack <b>AI</b></span></div><div className="setup-step">WELCOME · QUICK SETUP</div><h2>Your nutrition journey starts here.</h2><p>Set up your profile and connect Gemini when you're ready to log your first meal.</p><div className="setup-fields"><NumberField label="Age" value={profile.age} suffix="years" onChange={v=>setProfile(p=>({...p,age:+v}))}/><NumberField label="Height" value={profile.height} suffix="cm" onChange={v=>setProfile(p=>({...p,height:+v}))}/><NumberField label="Current weight" value={profile.weight} suffix="kg" onChange={v=>setProfile(p=>({...p,weight:+v}))}/><NumberField label="Target weight" value={profile.targetWeight} suffix="kg" onChange={v=>setProfile(p=>({...p,targetWeight:+v}))}/></div><label className="field-label">YOUR PRIMARY GOAL</label><div className="goal-options setup-goals">{[['lose','Lose weight',ArrowDownRight],['maintain','Maintain',Scale],['gain','Gain weight',ArrowUpRight]].map(([v,l,I])=><button key={v} className={profile.goal===v?'chosen':''} onClick={()=>setProfile(p=>({...p,goal:v}))}><I size={17}/><b>{l}</b></button>)}</div><button className="primary-btn full-btn" onClick={()=>{write('nt_setup_done',true);setShowSetup(false);setPage('Settings');}}>Continue to AI setup <ChevronRight size={16}/></button><button className="skip-btn" onClick={()=>{write('nt_setup_done',true);setShowSetup(false);}}>I'll configure this later</button><small className="setup-foot">You can change all of these details later in Goals and Settings.</small></div></div>}
+    {showSetup&&<div className="modal-backdrop"><div className="setup-modal"><div className="setup-brand"><div className="brand-mark"><Apple size={22}/></div><span>NutriTrack <b>AI</b></span></div><div className="setup-step">WELCOME · QUICK SETUP</div><h2>Your nutrition journey starts here.</h2><p>Set up your profile and connect Gemini when you're ready to log your first meal.</p><div className="setup-fields"><NumberField label="Age" value={profile.age} suffix="years" onChange={v=>setProfile(p=>({...p,age:+v}))}/><NumberField label="Height" value={profile.height} suffix="cm" onChange={v=>setProfile(p=>({...p,height:+v}))}/><NumberField label="Current weight" value={profile.weight} suffix="kg" onChange={v=>setProfile(p=>({...p,weight:+v}))}/><NumberField label="Target weight" value={profile.targetWeight} suffix="kg" onChange={v=>setProfile(p=>({...p,targetWeight:+v}))}/></div><label className="field-label">YOUR PRIMARY GOAL</label><div className="goal-options setup-goals">{[['lose','Lose weight',ArrowDownRight],['maintain','Maintain',Scale],['gain','Gain weight',ArrowUpRight]].map(([v,l,I])=><button key={v} className={profile.goal===v?'chosen':''} onClick={()=>setProfile(p=>({...p,goal:v}))}><I size={17}/><b>{l}</b></button>)}</div><button className="primary-btn full-btn" onClick={()=>{setShowSetup(false);setPage('Settings');}}>Continue to AI setup <ChevronRight size={16}/></button><button className="skip-btn" onClick={()=>{setShowSetup(false);}}>I'll configure this later</button><small className="setup-foot">You can change all of these details later in Goals and Settings.</small></div></div>}
     {notice&&<div className="toast"><Check size={16}/>{notice}</div>}
   </div>;
 }

@@ -1,6 +1,6 @@
 # Firebase setup for NutriTrack AI
 
-The app remains usable in local-only mode until Firebase environment variables are configured.
+A Firebase account is required to use NutriTrack AI. The app no longer offers guest or local-only access.
 
 ## 1. Create/configure a Firebase project
 1. Open https://console.firebase.google.com/ and create a project.
@@ -17,12 +17,12 @@ These are public Firebase web-app configuration values, not admin credentials. N
 ## 3. Firestore security rules
 Publish the contents of `firestore.rules` in Firebase Console → Firestore Database → Rules. The rules restrict every user to their own `users/{uid}` path.
 
-## 4. Data behavior
-- Existing local profile, meal history and weight records remain in the browser.
-- On first Google sign-in, if the account has no cloud data, the current browser data is uploaded.
-- If cloud data already exists, it is downloaded and becomes the account's current data on that device.
-- Subsequent changes sync to Firestore. Keep using Settings → Export backup as an additional backup.
-- Signing out leaves the browser's local copy intact.
+## 4. Account data behavior
+- Users must sign in before entering the app.
+- Firestore stores profile, meals and weight history under the authenticated UID.
+- On first sign-in, if the account has no cloud data, legacy browser data is migrated once and then removed from local storage. Existing cloud data takes precedence.
+- Subsequent changes sync to Firestore. Settings → Export backup remains available.
+- Signing out clears account data from the active app session; it does not delete the cloud account.
 
 ## 5. Launch checks
 Test Google sign-in on the deployed HTTPS domain, confirm Firestore rules are published, and verify that two devices signed into the same account see the same records. Configure Firebase budget alerts/usage monitoring. Do not launch paid subscriptions until server-side AI proxying and payment verification are implemented.
@@ -67,3 +67,28 @@ npx wrangler d1 execute nutritrack-ai-usage --remote --command "SELECT * FROM ai
 ```
 
 The daily and monthly limits are constants in `src/worker.js` (`DAILY_LIMIT` and `MONTHLY_LIMIT`). Change them only on the server. These controls are a first protective layer, not a complete paid-subscription or enterprise abuse-prevention system. Subscription entitlement checks, payment verification, Firebase token-revocation checks, and broader abuse monitoring remain launch requirements.
+
+
+## 8. Account-first access and five-analysis demo
+
+The app now requires Firebase authentication before any workspace content is displayed. There is no guest/local-only mode. Firestore is the source of truth. Existing nt_profile, nt_meals and nt_weights values are migrated once at first sign-in only when the account has no cloud profile; those legacy keys are removed after a successful upload.
+
+The Worker creates a D1 entitlement row for each authenticated user. New accounts start in demo state and receive five lifetime demo analyses. Demo usage is separate from the paid/trial quota counters, enforced server-side, and unsuccessful Gemini calls refund the demo count. The demo endpoint is rate-limited. When demo analyses are exhausted, standard AI analysis returns a subscription-required response.
+
+The entitlement states are demo, trialing, active, past_due, cancelled and expired. The normal 20/day and 500/month quota is available only to a valid trialing or active entitlement. Trial and paid entitlements are not activated from the browser.
+
+Apply the new migration after the existing AI usage migration:
+
+```bash
+npx wrangler d1 migrations apply nutritrack-ai-usage --remote
+```
+
+The migration creates user_entitlements, demo_usage, payment_methods, trial_claims and subscription_events. Preview and Production currently point to the same configured D1 database in this branch; create a separate Preview database before broader testing or launch.
+
+## 9. Razorpay integration status
+
+Razorpay payment activation is deliberately not enabled in this foundation commit. Before enabling it, configure Razorpay Test Mode credentials as Cloudflare Worker Secrets, create monthly and annual plans, and configure a signed webhook endpoint. The Worker must create subscriptions server-side, use a future start_at for the three-day trial, and only grant access after verified Razorpay webhook events.
+
+Razorpay webhook subscription payloads can include a provider card_id (for example, in subscription.authenticated). The duplicate-trial check should use a stable provider-issued payment-method identifier when supplied; never use last-four digits as a unique card identity and never collect raw card number or CVV. If the provider does not return a stable identifier for a payment method, do not claim duplicate-card blocking is guaranteed.
+
+Trial eligibility policy: one successful three-day trial per recognized payment method. A previously used method cannot claim another trial, but can still purchase a paid subscription. A declined/abandoned authorization does not consume a trial. The trial must disclose the first charge amount/date and obtain explicit consent to the recurring mandate.
