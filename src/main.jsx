@@ -215,7 +215,27 @@ function App(){
             ? 'Previous checkout was safely closed. You can try again.'
             : 'Checkout is still being verified by Razorpay. Please wait before retrying.');
         }).catch(() => setBillingMessage('Checkout closed. If retry is blocked, refresh the page and try again in a moment.'));
-      } }, handler: () => setBillingMessage('Checkout returned successfully. Waiting for verified server notification before enabling premium access. Use Refresh access in a moment.') });
+      } }, handler: async (checkoutResponse) => {
+        setBillingMessage('Verifying your subscription…');
+        try {
+          const token = await authUser.getIdToken();
+          const verifyResponse = await fetch('/api/verify-subscription', {
+            method: 'POST',
+            headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              subscriptionId: checkoutResponse.razorpay_subscription_id || checkout.id,
+              paymentId: checkoutResponse.razorpay_payment_id,
+              signature: checkoutResponse.razorpay_signature
+            })
+          });
+          const result = await verifyResponse.json().catch(() => ({}));
+          if (!verifyResponse.ok) throw new Error(result.error || 'Could not verify your subscription.');
+          setBillingMessage('Subscription verified. Your three-day trial is now active.');
+          await refreshAccountAccess();
+        } catch (error) {
+          setBillingError(error.message || 'Subscription verification failed. Please refresh access or contact support.');
+        }
+      } });
       rzp.on('payment.failed', event => setBillingError(event.error?.description || 'The authorization did not complete. You can try again.'));
       rzp.open();
     } catch (error) { setBillingError(error.message || 'Could not start checkout.'); }
