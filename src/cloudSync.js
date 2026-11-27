@@ -19,21 +19,24 @@ export function subscribeCloudData(uid, onData, onError) {
   let mealsSnapshot = null;
   let profileReady = false;
   let mealsReady = false;
-  const publish = () => {
+  let published = false;
+  const publish = (changed) => {
     if (!profileReady || !mealsReady) return;
     const profileData = profileSnapshot?.exists() ? profileSnapshot.data() : {};
+    const changeType = published ? changed : 'initial';
+    published = true;
     onData({
       profile: profileData.profile || null,
       weights: Array.isArray(profileData.weights) ? profileData.weights : null,
       meals: mealsSnapshot.docs.map((item) => item.data()),
       hasCloudData: Boolean(profileSnapshot?.exists() || !mealsSnapshot.empty),
-    });
+    }, changeType);
   };
   const stopProfile = onSnapshot(profileDoc(uid), (snapshot) => {
-    profileSnapshot = snapshot; profileReady = true; publish();
+    profileSnapshot = snapshot; profileReady = true; publish('profile');
   }, onError);
   const stopMeals = onSnapshot(mealsCollection(uid), (snapshot) => {
-    mealsSnapshot = snapshot; mealsReady = true; publish();
+    mealsSnapshot = snapshot; mealsReady = true; publish('meals');
   }, onError);
   return () => { stopProfile(); stopMeals(); };
 }
