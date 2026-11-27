@@ -1,5 +1,5 @@
 import {
-  collection, doc, getDoc, getDocs, serverTimestamp, setDoc, writeBatch,
+  collection, deleteDoc, doc, getDoc, getDocs, serverTimestamp, setDoc, writeBatch,
 } from 'firebase/firestore';
 import { db } from './firebase';
 
@@ -36,4 +36,15 @@ export async function saveCloudData(uid, { profile, weights, meals }) {
     });
     await batch.commit();
   }
+}
+
+
+export async function deleteCloudData(uid) {
+  const existing = await getDocs(mealsCollection(uid));
+  for (let index = 0; index < existing.docs.length; index += 450) {
+    const batch = writeBatch(db);
+    existing.docs.slice(index, index + 450).forEach((item) => batch.delete(item.ref));
+    await batch.commit();
+  }
+  await deleteDoc(profileDoc(uid));
 }
