@@ -253,7 +253,8 @@ async function releaseAbandonedSubscription(env, userId, subscriptionId) {
   if (!safeToRelease) return { released: false, reason: "authorization_may_have_succeeded", status };
 
   if (status === "created") {
-    await cancelRazorpaySubscription(env, subscriptionId);
+    // Do not clear the local lock unless Razorpay confirms the cancellation request.
+    await razorpayRequest(env, `/subscriptions/${encodeURIComponent(subscriptionId)}/cancel`, "POST", { cancel_at_cycle_end: 0 });
   }
   await env.DB.batch([
     env.DB.prepare("UPDATE trial_claims SET status = 'expired' WHERE user_id = ? AND provider_subscription_id = ? AND status = 'pending'")
@@ -398,10 +399,10 @@ export default {
     if (!env.FIREBASE_PROJECT_ID) missingConfig.push("FIREBASE_PROJECT_ID");
     if (["/api/meal-analysis", "/api/demo-analysis", "/api/ai-status"].includes(url.pathname) && !env.GEMINI_API_KEY) missingConfig.push("GEMINI_API_KEY");
     if (!env.DB) missingConfig.push("DB");
-    if (["/api/create-subscription", "/api/cancel-subscription"].includes(url.pathname) && !razorpayConfigured(env)) missingConfig.push("RAZORPAY_API_KEY/RAZORPAY_SECRET");
+    if (["/api/create-subscription", "/api/cancel-subscription", "/api/abandon-subscription"].includes(url.pathname) && !razorpayConfigured(env)) missingConfig.push("RAZORPAY_API_KEY/RAZORPAY_SECRET");
     if (missingConfig.length) {
       const geminiPath = ["/api/meal-analysis", "/api/demo-analysis", "/api/ai-status"].includes(url.pathname);
-      const subscriptionPath = ["/api/create-subscription", "/api/cancel-subscription"].includes(url.pathname);
+      const subscriptionPath = ["/api/create-subscription", "/api/cancel-subscription", "/api/abandon-subscription"].includes(url.pathname);
       const message = geminiPath ? "Gemini AI is not configured on this Preview deployment." : subscriptionPath ? "Razorpay subscription service is not configured on this Preview deployment." : "Account service is not configured on this Preview deployment.";
       return json({ error: message, missing: missingConfig }, 503);
     }
