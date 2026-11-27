@@ -304,143 +304,46 @@ async function handleRazorpayWebhook(request, env) {
   if (raw.length > 256_000) return json({ error: "Payload too large." }, 413);
   const signature = request.headers.get("x-razorpay-signature") || "";
   if (!await verifyWebhookSignature(raw, signature, env.RAZORPAY_WEBHOOK_SECRET)) return json({ error: "Invalid webhook signature." }, 401);
-
-  let event;
-  try { event = JSON.parse(raw); } catch { return json({ error: "Invalid webhook payload." }, 400); }
+  let event; try { event = JSON.parse(raw); } catch { return json({ error: "Invalid webhook payload." }, 400); }
   const eventId = request.headers.get("x-razorpay-event-id") || event.id;
   if (!eventId) return json({ error: "Missing event identifier." }, 400);
-
-  const claim = event.payload?.subscription?.entity || {};
-  let payment = event.payload?.payment?.entity || {};
-  const subId = claim.id || payment.subscription_id;
-  if (!subId) return json({ ok: true, ignored: true });
-
-  const pending = await env.DB.prepare(
-    "SELECT user_id, started_at, ends_at FROM trial_claims WHERE provider_subscription_id = ?"
-  ).bind(subId).first();
-  if (!pending) return json({ ok: true, ignored: true });
-
-  const priorEvent = await env.DB.prepare(
-    "SELECT provider_event_id FROM subscription_events WHERE provider_event_id = ?"
-  ).bind(eventId).first();
-  if (priorEvent) return json({ ok: true, duplicate: true });
-
-  const userId = pending.user_id;
-
-  // subscription.authenticated confirms that the mandate was authenticated, but
-  // its webhook payload is not guaranteed to contain a payment/card entity.
-  // Wait for payment.authorized, which carries the payment details used for the
-  // one-trial-per-card check. Never cancel solely because this event lacks card_id.
-  if (event.event === "payment.authorized" || event.event === "subscription.authenticated") {
-    // Either webhook can carry the card identifier. In particular, Razorpay's
-    // subscription.authenticated entity can include method/card_id, while a
-    // payment.authorized entity may not include subscription_id at all.
-    if (event.event === "payment.authorized" && (!payment.card_id || !payment.method) && payment.id) {
-      try {
-        const fetchedPayment = await razorpayRequest(env, `/payments/${encodeURIComponent(payment.id)}`);
-        payment = { ...payment, ...fetchedPayment };
-      } catch (error) {
-        console.error("Could not fetch Razorpay authorization payment", { subscriptionId: subId, paymentId: payment.id, message: error.message });
-        return json({ error: "Could not verify the authorized payment yet." }, 503);
-      }
-    }
-
-    let method = payment.method || claim.method || claim.payment_method;
-    let cardId = payment.card_id || payment.card?.id || claim.card_id || claim.card?.id;
-
-    // If the authenticated webhook omits card details, retrieve the canonical
-    // subscription resource rather than waiting for an unrelated payment event.
-    if (!cardId && event.event === "subscription.authenticated") {
-      try {
-        const remoteSubscription = await razorpayRequest(env, `/subscriptions/${encodeURIComponent(subId)}`);
-        method = method || remoteSubscription.method || remoteSubscription.payment_method;
-        cardId = remoteSubscription.card_id || remoteSubscription.card?.id;
-      } catch (error) {
-        console.error("Could not fetch Razorpay authenticated subscription", { subscriptionId: subId, message: error.message });
-        return json({ error: "Could not verify the authenticated payment method yet." }, 503);
-      }
-    }
-
-    if (method && method !== "card") {
-      // The product currently offers card authorization only. Reject an
-      // explicitly non-card authorization, but do not treat missing data as one.
-      await env.DB.batch([
-        env.DB.prepare("UPDATE trial_claims SET status = 'rejected' WHERE provider_subscription_id = ? AND status = 'pending'").bind(subId),
-        env.DB.prepare("INSERT INTO subscription_events (provider_event_id, provider, event_type, processed_at) VALUES (?, 'razorpay', ?, ?)").bind(eventId, event.event, Date.now()),
-      ]);
-      await cancelRazorpaySubscription(env, subId);
-      return json({ ok: true, rejected: "unsupported_payment_method" });
-    }
-
-    if (!cardId) {
-      // Leave the subscription untouched and the local claim pending. Returning
-      // a non-2xx response allows Razorpay to retry while we avoid a false cancel.
-      console.error("Razorpay card authorization is missing a card identifier after payment fetch", { subscriptionId: subId, paymentId: payment.id || null });
-      return json({ error: "Card authorization details are incomplete; retry verification." }, 503);
-    }
-
-    const existing = await env.DB.prepare(
-      "SELECT user_id FROM payment_methods WHERE provider = 'razorpay' AND provider_payment_method_id = ?"
-    ).bind(cardId).first();
-
-    if (existing) {
-      await env.DB.batch([
-        env.DB.prepare("UPDATE trial_claims SET status = 'rejected', provider_payment_method_id = ? WHERE provider_subscription_id = ? AND status = 'pending'").bind(cardId, subId),
-        env.DB.prepare("INSERT INTO subscription_events (provider_event_id, provider, event_type, processed_at) VALUES (?, 'razorpay', ?, ?)").bind(eventId, event.event, Date.now()),
-      ]);
-      await cancelRazorpaySubscription(env, subId);
-      return json({ ok: true, rejected: "payment_method_already_used" });
-    }
-
-    try {
-      // D1 batch is atomic: the idempotency marker is committed together with
-      // the card claim and entitlement. If any statement fails, Razorpay can retry.
-      await env.DB.batch([
-        env.DB.prepare("INSERT INTO payment_methods (provider, provider_payment_method_id, user_id, first_seen_at, trial_claimed_at) VALUES ('razorpay', ?, ?, ?, ?)").bind(cardId, userId, Date.now(), Date.now()),
-        env.DB.prepare("UPDATE trial_claims SET provider_payment_method_id = ?, status = 'trialing' WHERE provider_subscription_id = ? AND status = 'pending'").bind(cardId, subId),
-        env.DB.prepare("UPDATE user_entitlements SET status = 'trialing', trial_started_at = ?, trial_ends_at = ?, plan_code = (SELECT plan_code FROM user_entitlements WHERE user_id = ?), razorpay_subscription_id = ?, updated_at = ? WHERE user_id = ? AND razorpay_subscription_id = ?")
-          .bind(Date.now(), pending.ends_at, userId, subId, Date.now(), userId, subId),
-        env.DB.prepare("INSERT INTO subscription_events (provider_event_id, provider, event_type, processed_at) VALUES (?, 'razorpay', ?, ?)").bind(eventId, event.event, Date.now()),
-      ]);
-    } catch (error) {
-      console.error("Could not register Razorpay trial authorization", { subscriptionId: subId, message: error.message });
-      return json({ error: "Could not register trial eligibility yet. Razorpay may retry this event." }, 500);
-    }
-    return json({ ok: true, trialActivated: true });
+  const subscription = event.payload?.subscription?.entity;
+  const subscriptionId = subscription?.id;
+  // Checkout verifies the initial authorization; payment.authorized is not needed here.
+  if (!subscriptionId) return json({ ok: true, ignored: true });
+  const prior = await env.DB.prepare("SELECT provider_event_id FROM subscription_events WHERE provider_event_id = ?").bind(eventId).first();
+  if (prior) return json({ ok: true, duplicate: true });
+  const claim = await env.DB.prepare("SELECT user_id FROM trial_claims WHERE provider_subscription_id = ?").bind(subscriptionId).first();
+  if (!claim) return json({ ok: true, ignored: true });
+  const userId = claim.user_id, now = Date.now(), eventType = event.event || "unknown";
+  const statements = [];
+  if (["subscription.activated", "subscription.charged", "subscription.resumed"].includes(eventType)) {
+    const paidUntil = Number(subscription.current_end || subscription.charge_at || 0) * 1000 || null;
+    statements.push(env.DB.prepare("UPDATE user_entitlements SET status = 'active', paid_until = COALESCE(?, paid_until), updated_at = ? WHERE user_id = ? AND razorpay_subscription_id = ?").bind(paidUntil, now, userId, subscriptionId));
+    statements.push(env.DB.prepare("UPDATE trial_claims SET status = 'converted' WHERE provider_subscription_id = ?").bind(subscriptionId));
+  } else if (["subscription.pending", "subscription.halted", "subscription.paused"].includes(eventType)) {
+    statements.push(env.DB.prepare("UPDATE user_entitlements SET status = 'past_due', updated_at = ? WHERE user_id = ? AND razorpay_subscription_id = ?").bind(now, userId, subscriptionId));
+  } else if (eventType === "subscription.cancelled") {
+    statements.push(env.DB.prepare("UPDATE user_entitlements SET status = 'cancelled', cancel_at_period_end = 0, updated_at = ? WHERE user_id = ? AND razorpay_subscription_id = ?").bind(now, userId, subscriptionId));
+    statements.push(env.DB.prepare("UPDATE trial_claims SET status = 'cancelled' WHERE provider_subscription_id = ? AND status IN ('pending', 'trialing')").bind(subscriptionId));
+  } else if (eventType === "subscription.completed") {
+    statements.push(env.DB.prepare("UPDATE user_entitlements SET status = 'expired', cancel_at_period_end = 0, updated_at = ? WHERE user_id = ? AND razorpay_subscription_id = ?").bind(now, userId, subscriptionId));
+    statements.push(env.DB.prepare("UPDATE trial_claims SET status = 'converted' WHERE provider_subscription_id = ?").bind(subscriptionId));
   }
+  statements.push(env.DB.prepare("INSERT INTO subscription_events (provider_event_id, provider, event_type, processed_at) VALUES (?, 'razorpay', ?, ?)").bind(eventId, eventType, now));
+  try { await env.DB.batch(statements); return json({ ok: true }); }
+  catch (error) { console.error("Could not process Razorpay subscription webhook", { subscriptionId, event: eventType, message: error.message }); return json({ error: "Could not process subscription event." }, 500); }
+}
 
-  // Apply lifecycle changes first, then persist the event marker. This avoids
-  // permanently marking an event processed when its database update fails.
-  try {
-    if (event.event === "subscription.activated" || event.event === "subscription.charged") {
-      const end = Number(claim.current_end || claim.charge_at || 0) * 1000 || Date.now() + 30 * 86400000;
-      await env.DB.batch([
-        env.DB.prepare("UPDATE user_entitlements SET status = 'active', paid_until = ?, updated_at = ? WHERE user_id = ? AND razorpay_subscription_id = ?")
-          .bind(end, Date.now(), userId, subId),
-        env.DB.prepare("UPDATE trial_claims SET status = 'converted' WHERE provider_subscription_id = ?").bind(subId),
-        env.DB.prepare("INSERT INTO subscription_events (provider_event_id, provider, event_type, processed_at) VALUES (?, 'razorpay', ?, ?)").bind(eventId, event.event || "unknown", Date.now()),
-      ]);
-    } else if (event.event === "subscription.halted") {
-      await env.DB.batch([
-        env.DB.prepare("UPDATE user_entitlements SET status = 'past_due', updated_at = ? WHERE user_id = ? AND razorpay_subscription_id = ?").bind(Date.now(), userId, subId),
-        env.DB.prepare("INSERT INTO subscription_events (provider_event_id, provider, event_type, processed_at) VALUES (?, 'razorpay', ?, ?)").bind(eventId, event.event || "unknown", Date.now()),
-      ]);
-    } else if (event.event === "subscription.cancelled" || event.event === "subscription.completed") {
-      await env.DB.batch([
-        env.DB.prepare("UPDATE user_entitlements SET status = 'cancelled', cancel_at_period_end = 0, updated_at = ? WHERE user_id = ? AND razorpay_subscription_id = ?").bind(Date.now(), userId, subId),
-        env.DB.prepare("UPDATE trial_claims SET status = CASE WHEN status = 'trialing' THEN 'cancelled' ELSE status END WHERE provider_subscription_id = ?").bind(subId),
-        env.DB.prepare("INSERT INTO subscription_events (provider_event_id, provider, event_type, processed_at) VALUES (?, 'razorpay', ?, ?)").bind(eventId, event.event || "unknown", Date.now()),
-      ]);
-    } else {
-      await env.DB.prepare("INSERT INTO subscription_events (provider_event_id, provider, event_type, processed_at) VALUES (?, 'razorpay', ?, ?)")
-        .bind(eventId, event.event || "unknown", Date.now()).run();
-    }
-  } catch (error) {
-    console.error("Could not process Razorpay subscription event", { subscriptionId: subId, event: event.event, message: error.message });
-    return json({ error: "Could not process this subscription event yet. Razorpay may retry it." }, 500);
-  }
-
-  return json({ ok: true });
+async function verifySubscriptionCheckoutSignature(paymentId, subscriptionId, signature, secret) {
+  if (!paymentId || !subscriptionId || !signature || !secret) return false;
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const digest = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(paymentId + "|" + subscriptionId));
+  const expected = [...new Uint8Array(digest)].map(value => value.toString(16).padStart(2, "0")).join("");
+  if (expected.length !== signature.length) return false;
+  let diff = 0;
+  for (let i = 0; i < expected.length; i++) diff |= expected.charCodeAt(i) ^ signature.charCodeAt(i);
+  return diff === 0;
 }
 
 async function callGemini(env, model, prompt, test = false) {
@@ -477,7 +380,7 @@ export default {
     if (!url.pathname.startsWith("/api/")) return env.ASSETS.fetch(request);
 
     if (url.pathname === "/api/razorpay-webhook" && request.method === "POST") return handleRazorpayWebhook(request, env);
-    const allowedPaths = ["/api/meal-analysis", "/api/demo-analysis", "/api/ai-status", "/api/usage", "/api/access", "/api/create-subscription", "/api/cancel-subscription", "/api/abandon-subscription"];
+    const allowedPaths = ["/api/meal-analysis", "/api/demo-analysis", "/api/ai-status", "/api/usage", "/api/access", "/api/create-subscription", "/api/verify-subscription", "/api/cancel-subscription", "/api/abandon-subscription"];
     if (request.method !== "POST" || !allowedPaths.includes(url.pathname)) {
       return json({ error: "Not found." }, 404);
     }
@@ -486,7 +389,7 @@ export default {
     if (!env.FIREBASE_PROJECT_ID) missingConfig.push("FIREBASE_PROJECT_ID");
     if (["/api/meal-analysis", "/api/demo-analysis", "/api/ai-status"].includes(url.pathname) && !env.GEMINI_API_KEY) missingConfig.push("GEMINI_API_KEY");
     if (!env.DB) missingConfig.push("DB");
-    if (["/api/create-subscription", "/api/cancel-subscription", "/api/abandon-subscription"].includes(url.pathname) && !razorpayConfigured(env)) missingConfig.push("RAZORPAY_API_KEY/RAZORPAY_SECRET");
+    if (["/api/create-subscription", "/api/verify-subscription", "/api/cancel-subscription", "/api/abandon-subscription"].includes(url.pathname) && !razorpayConfigured(env)) missingConfig.push("RAZORPAY_API_KEY/RAZORPAY_SECRET");
     if (missingConfig.length) {
       const geminiPath = ["/api/meal-analysis", "/api/demo-analysis", "/api/ai-status"].includes(url.pathname);
       const subscriptionPath = ["/api/create-subscription", "/api/cancel-subscription", "/api/abandon-subscription"].includes(url.pathname);
@@ -503,6 +406,28 @@ export default {
 
     if (url.pathname === "/api/create-subscription" || url.pathname === "/api/cancel-subscription" || url.pathname === "/api/abandon-subscription") {
       let body; try { body = await request.json(); } catch { return json({ error: "Invalid request body." }, 400); }
+      if (url.pathname === "/api/verify-subscription") {
+        const subscriptionId = typeof body.subscriptionId === "string" ? body.subscriptionId : "";
+        const paymentId = typeof body.paymentId === "string" ? body.paymentId : "";
+        const signature = typeof body.signature === "string" ? body.signature : "";
+        if (!/^sub_[A-Za-z0-9]+$/.test(subscriptionId) || !/^pay_[A-Za-z0-9]+$/.test(paymentId) || !signature) return json({ error: "Invalid Razorpay Checkout response." }, 400);
+        try {
+          const claim = await env.DB.prepare("SELECT user_id, ends_at, status FROM trial_claims WHERE user_id = ? AND provider_subscription_id = ? AND provider = 'razorpay'").bind(userId, subscriptionId).first();
+          if (!claim) return json({ error: "Subscription was not found for this account." }, 404);
+          if (!await verifySubscriptionCheckoutSignature(paymentId, subscriptionId, signature, razorpayCredentials(env).keySecret)) return json({ error: "Razorpay payment verification failed." }, 400);
+          if (claim.status === "trialing" || claim.status === "converted") return json({ ok: true, alreadyVerified: true });
+          if (claim.status !== "pending") return json({ error: "This subscription is no longer pending." }, 409);
+          const now = Date.now();
+          await env.DB.batch([
+            env.DB.prepare("UPDATE trial_claims SET status = 'trialing' WHERE user_id = ? AND provider_subscription_id = ? AND status = 'pending'").bind(userId, subscriptionId),
+            env.DB.prepare("UPDATE user_entitlements SET status = 'trialing', trial_started_at = ?, trial_ends_at = ?, razorpay_subscription_id = ?, updated_at = ? WHERE user_id = ? AND razorpay_subscription_id = ?").bind(now, claim.ends_at, subscriptionId, now, userId, subscriptionId)
+          ]);
+          return json({ ok: true, trialEndsAt: claim.ends_at });
+        } catch (error) {
+          console.error("Razorpay Checkout verification failed", { subscriptionId, message: error.message });
+          return json({ error: "Could not verify the subscription right now. Please try again." }, 503);
+        }
+      }
       if (url.pathname === "/api/abandon-subscription") {
         const subscriptionId = typeof body.subscriptionId === "string" ? body.subscriptionId : "";
         if (!/^sub_[A-Za-z0-9]+$/.test(subscriptionId)) return json({ error: "Invalid subscription reference." }, 400);
