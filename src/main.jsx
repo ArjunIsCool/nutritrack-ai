@@ -202,7 +202,20 @@ function App(){
       if (!response.ok) throw new Error(data.error || 'Could not create subscription.');
       if (!window.Razorpay) await new Promise((resolve, reject) => { const script = document.createElement('script'); script.src = 'https://checkout.razorpay.com/v1/checkout.js'; script.onload = resolve; script.onerror = () => reject(new Error('Could not load Razorpay Checkout.')); document.body.appendChild(script); });
       const checkout = data.checkout;
-      const rzp = new window.Razorpay({ key: checkout.key, subscription_id: checkout.id, name: 'NutriTrack AI', description: planCode === 'monthly' ? '₹75 per month after 3-day trial' : '₹500 per year after 3-day trial', image: '/icons/icon-192.png', prefill: { name: authUser.displayName || '', email: authUser.email || '' }, notes: { product: 'NutriTrack AI', plan_code: planCode }, theme: { color: '#75a843' }, modal: { ondismiss: () => setBillingMessage('Checkout closed. No premium access has been granted.') }, handler: () => setBillingMessage('Checkout returned successfully. Waiting for verified server notification before enabling premium access. Use Refresh access in a moment.') });
+      const rzp = new window.Razorpay({ key: checkout.key, subscription_id: checkout.id, name: 'NutriTrack AI', description: planCode === 'monthly' ? '₹75 per month after 3-day trial' : '₹500 per year after 3-day trial', image: '/icons/icon-192.png', prefill: { name: authUser.displayName || '', email: authUser.email || '' }, notes: { product: 'NutriTrack AI', plan_code: planCode }, theme: { color: '#75a843' }, modal: { ondismiss: () => {
+        setBillingMessage('Checkout closed. Checking whether the authorization can be safely retried…');
+        authUser.getIdToken().then(token => fetch('/api/abandon-subscription', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ subscriptionId: checkout.id })
+        })).then(async response => {
+          const result = await response.json().catch(() => ({}));
+          if (!response.ok) throw new Error(result.error || 'Could not check the abandoned checkout.');
+          setBillingMessage(result.released
+            ? 'Previous checkout was safely closed. You can try again.'
+            : 'Checkout is still being verified by Razorpay. Please wait before retrying.');
+        }).catch(() => setBillingMessage('Checkout closed. If retry is blocked, refresh the page and try again in a moment.'));
+      } }, handler: () => setBillingMessage('Checkout returned successfully. Waiting for verified server notification before enabling premium access. Use Refresh access in a moment.') });
       rzp.on('payment.failed', event => setBillingError(event.error?.description || 'The authorization did not complete. You can try again.'));
       rzp.open();
     } catch (error) { setBillingError(error.message || 'Could not start checkout.'); }
