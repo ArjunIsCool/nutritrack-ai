@@ -207,7 +207,6 @@ function App(){
       setAiUsage(null); setAccess(null); setDemoUsage(null);
       setNotice('Your NutriTrack account has been permanently deleted.');
     } catch (error) {
-      setCloudReady(true);
       const message = error.code === 'auth/popup-closed-by-user'
         ? 'Google re-authentication was cancelled. Your account was not deleted.'
         : error.code === 'auth/requires-recent-login'
@@ -324,7 +323,7 @@ function App(){
   const chartData=Array.from({length:7},(_,i)=>{const d=new Date();d.setDate(d.getDate()-(6-i));const key=d.toISOString().slice(0,10);return {day:d.toLocaleDateString('en',{weekday:'short'}),calories:meals.filter(m=>m.date===key).reduce((s,m)=>s+(+m.calories||0),0)};});
   const displayMeals=showAll?meals:meals.slice(0,5);
   if (authLoading) return <div className="auth-gate"><div className="auth-gate-card"><div className="brand-mark"><Apple size={23}/></div><h1>NutriTrack <span>AI</span></h1><p>Checking your account…</p><LoaderCircle className="spin" size={22}/></div></div>;
-  if (authUser && !cloudReady) return <div className="auth-gate"><div className="auth-gate-card"><div className="brand-mark"><Apple size={23}/></div><h1>NutriTrack <span>AI</span></h1>{syncStatus === 'error' ? <><p>We couldn't load your account data. Your account has not been switched to local storage.</p><div className="error-box">{authError || 'Cloud data could not be loaded.'}</div><button className="secondary-btn" onClick={()=>window.location.reload()}>Retry</button></> : <><p>Loading your secure account data…</p><LoaderCircle className="spin" size={22}/></>}</div></div>;
+  if (authUser && !cloudReady && !accountDeleteError) return <div className="auth-gate"><div className="auth-gate-card"><div className="brand-mark"><Apple size={23}/></div><h1>NutriTrack <span>AI</span></h1>{syncStatus === 'error' ? <><p>We couldn't load your account data. Your account has not been switched to local storage.</p><div className="error-box">{authError || 'Cloud data could not be loaded.'}</div><button className="secondary-btn" onClick={()=>window.location.reload()}>Retry</button></> : <><p>Loading your secure account data…</p><LoaderCircle className="spin" size={22}/></>}</div></div>;
   if (!authUser) return <div className="auth-gate"><div className="auth-gate-card"><div className="brand-mark"><Apple size={23}/></div><div className="setup-step">YOUR DAILY NUTRITION COMPANION</div><h1>NutriTrack <span>AI</span></h1><p>Create an account or sign in to securely save your nutrition profile, meals and progress across devices.</p>{authError&&<div className="error-box">{authError}</div>}<button className="primary-btn full-btn" onClick={handleGoogleSignIn} disabled={authLoading||!firebaseConfigured}>{authLoading?<LoaderCircle className="spin" size={17}/>:<ShieldCheck size={17}/>} Continue with Google</button>{!firebaseConfigured&&<small>Sign-in is temporarily unavailable while account services are configured.</small>}<div className="auth-benefits"><span><Check size={14}/> Five free AI demo analyses</span><span><Check size={14}/> Your data saved to your account</span><span><Check size={14}/> Optional three-day premium trial</span></div></div></div>;
   return <div className="app-shell">
     <aside className={`sidebar ${mobileNav?'open':''}`}>
