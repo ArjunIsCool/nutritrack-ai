@@ -4,7 +4,7 @@ import { Activity, Apple, ArrowDownRight, ArrowUpRight, BarChart3, Bell, Calenda
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { deleteUser, onAuthStateChanged, reauthenticateWithPopup, signInWithPopup, signOut } from 'firebase/auth';
 import { auth, firebaseConfigured, googleProvider } from './firebase';
-import { deleteCloudData, loadCloudData, saveCloudData } from './cloudSync';
+import { deleteCloudData, deleteCloudMeal, replaceCloudData, saveCloudData, subscribeCloudData } from './cloudSync';
 import './style.css';
 
 const today = () => new Date().toISOString().slice(0,10);
@@ -80,39 +80,42 @@ function App(){
   useEffect(() => {
     if (!authUser) { setCloudReady(false); return undefined; }
     let active = true;
+    let migrated = false;
+    setCloudReady(false);
     setSyncStatus('loading');
-    loadCloudData(authUser.uid).then(async (cloud) => {
+    const unsubscribe = subscribeCloudData(authUser.uid, async (cloud) => {
       if (!active) return;
-      if (cloud.hasCloudData) {
-        if (cloud.profile) setProfile(cloud.profile);
-        if (cloud.weights) setWeights(cloud.weights);
-        setMeals(cloud.meals);
-      } else {
-        // One-time migration for existing local-only users. After this upload,
-        // Firestore becomes the source of truth and local persistence is disabled.
-        const legacyProfile = read('nt_profile', null);
-        const legacyMeals = read('nt_meals', null);
-        const legacyWeights = read('nt_weights', null);
-        const migratedProfile = legacyProfile || profile;
-        const migratedMeals = Array.isArray(legacyMeals) ? legacyMeals : meals;
-        const migratedWeights = Array.isArray(legacyWeights) ? legacyWeights : weights;
-        if (legacyProfile) setProfile(legacyProfile);
-        if (Array.isArray(legacyMeals)) setMeals(legacyMeals);
-        if (Array.isArray(legacyWeights)) setWeights(legacyWeights);
-        await saveCloudData(authUser.uid, { profile: migratedProfile, meals: migratedMeals, weights: migratedWeights });
-        localStorage.removeItem('nt_profile');
-        localStorage.removeItem('nt_meals');
-        localStorage.removeItem('nt_weights');
-        localStorage.removeItem('nt_setup_done');
+      try {
+        if (!migrated && !cloud.hasCloudData) {
+          migrated = true;
+          const legacyProfile = read('nt_profile', null);
+          const legacyMeals = read('nt_meals', null);
+          const legacyWeights = read('nt_weights', null);
+          const migratedProfile = legacyProfile || profile;
+          const migratedMeals = Array.isArray(legacyMeals) ? legacyMeals : meals;
+          const migratedWeights = Array.isArray(legacyWeights) ? legacyWeights : weights;
+          if (legacyProfile) setProfile(legacyProfile);
+          if (Array.isArray(legacyMeals)) setMeals(legacyMeals);
+          if (Array.isArray(legacyWeights)) setWeights(legacyWeights);
+          await saveCloudData(authUser.uid, { profile: migratedProfile, meals: migratedMeals, weights: migratedWeights });
+          localStorage.removeItem('nt_profile');
+          localStorage.removeItem('nt_meals');
+          localStorage.removeItem('nt_weights');
+          localStorage.removeItem('nt_setup_done');
+        } else {
+          migrated = true;
+          if (cloud.profile) setProfile(cloud.profile);
+          if (cloud.weights) setWeights(cloud.weights);
+          setMeals(cloud.meals);
+        }
+        if (active) { setCloudReady(true); setSyncStatus('synced'); setAuthError(''); }
+      } catch (error) {
+        if (active) { setSyncStatus('error'); setAuthError(error.message || 'Cloud sync failed. Your account data is still available.'); }
       }
-      if (active) { setCloudReady(true); setSyncStatus('synced'); }
-    }).catch((error) => {
-      if (active) {
-        setSyncStatus('error');
-        setAuthError(error.message || 'Cloud sync failed. Your account data is still available.');
-      }
+    }, (error) => {
+      if (active) { setSyncStatus('error'); setAuthError(error.message || 'Cloud sync failed. Your account data is still available.'); }
     });
-    return () => { active = false; };
+    return () => { active = false; unsubscribe(); };
   // Initial hydration is intentionally tied to the signed-in account only.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authUser?.uid]);
@@ -305,11 +308,11 @@ function App(){
     finally{setBusy(false);}
   };
   const saveMeal=()=>{if(!draft)return;const t=draft.totals||{};const meal={id:crypto.randomUUID?.()||String(Date.now()),date:draft.date||today(),time:draft.time||'12:00',category:draft.category||'Meal',name:draft.meal_name||'Meal',items:draft.items||[],calories:+t.calories||0,protein:+t.protein||0,carbs:+t.carbs||0,fat:+t.fat||0,fiber:+t.fiber||0,sugar:+t.sugar||0,assessment:draft.assessment||'',quality:draft.quality||'Moderate',source:'gemini'};setMeals(prev=>[meal,...prev]);setDraft(null);setPrompt('');setPage('Dashboard');setNotice('Meal saved to today’s log.');};
-  const removeMeal=id=>{setMeals(m=>m.filter(x=>x.id!==id));setNotice('Meal deleted.');};
+  const removeMeal=id=>{setMeals(m=>m.filter(x=>x.id!==id));if(authUser&&cloudReady)deleteCloudMeal(authUser.uid,id).catch(error=>{setSyncStatus('error');setAuthError(error.message||'Could not delete this meal from the cloud.');});setNotice('Meal deleted.');};
   const saveProfile=()=>{setEditingProfile(false);setNotice('Your goals have been updated.');};
   const saveWeight=()=>{const n=Number(weightInput);if(!n||n<25||n>350)return;setWeights(w=>[{date:today(),weight:n},...w.filter(x=>x.date!==today())]);setProfile(p=>({...p,weight:n}));setWeightInput('');setNotice('Weight entry saved.');};
   const exportData=()=>{const data={app:'NutriTrack AI',version:1,exportedAt:new Date().toISOString(),profile,meals,weights};const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=`nutritrack-backup-${today()}.json`;a.click();URL.revokeObjectURL(url);setNotice('Backup exported.');};
-  const importData=e=>{const file=e.target.files?.[0];if(!file)return;const reader=new FileReader();reader.onload=()=>{try{const d=JSON.parse(reader.result);if(d.app!=='NutriTrack AI'||!Array.isArray(d.meals)||!d.profile)throw new Error('This does not look like a NutriTrack AI backup.');if(!confirm(`Import ${d.meals.length} meals and replace current profile/history?`))return;setProfile(d.profile);setMeals(d.meals);setWeights(Array.isArray(d.weights)?d.weights:[]);setNotice('Backup imported successfully.');}catch(err){setError(err.message||'Could not read backup file.');}};reader.readAsText(file);e.target.value='';};
+  const importData=e=>{const file=e.target.files?.[0];if(!file)return;const reader=new FileReader();reader.onload=async()=>{try{const d=JSON.parse(reader.result);if(d.app!=='NutriTrack AI'||!Array.isArray(d.meals)||!d.profile)throw new Error('This does not look like a NutriTrack AI backup.');if(!confirm(`Import ${d.meals.length} meals and replace current profile/history?`))return;const nextWeights=Array.isArray(d.weights)?d.weights:[];if(authUser)await replaceCloudData(authUser.uid,{profile:d.profile,meals:d.meals,weights:nextWeights});setProfile(d.profile);setMeals(d.meals);setWeights(nextWeights);setNotice('Backup imported successfully.');}catch(err){setError(err.message||'Could not read backup file.');}};reader.readAsText(file);e.target.value='';};
   const testConnection=async()=>{
     if(!authUser){setError('Sign in with Google before testing AI.');return;}
     setBusy(true);setError('');
