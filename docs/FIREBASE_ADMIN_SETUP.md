@@ -32,7 +32,7 @@ npm install
 cd ..
 ```
 
-No service-account JSON key is required. Cloud Functions uses its attached Google service identity / Application Default Credentials.
+No service-account JSON key is required. Cloud Functions uses its attached Google service identity / Application Default Credentials. In Google Cloud Console → IAM, confirm the runtime service account used by this function has the permissions needed for Firebase Authentication user management (typically **Firebase Authentication Admin** / `roles/firebaseauth.admin`) and Firestore writes (for example **Cloud Datastore User** / `roles/datastore.user`, subject to your project's IAM model). Grant only the minimum required roles to the actual runtime service account; do not grant Owner or Editor just to make deployment work.
 
 ### Configure the shared secret
 
