@@ -442,7 +442,8 @@ export default {
             env.DB.prepare("DELETE FROM payment_methods WHERE user_id = ?").bind(userId),
             env.DB.prepare("DELETE FROM demo_usage WHERE user_id = ?").bind(userId),
             env.DB.prepare("DELETE FROM ai_usage WHERE user_id = ?").bind(userId),
-            env.DB.prepare("DELETE FROM user_entitlements WHERE user_id = ?").bind(userId)
+            env.DB.prepare("DELETE FROM user_entitlements WHERE user_id = ?").bind(userId),
+            env.DB.prepare("DELETE FROM session_revocations WHERE user_id = ?").bind(userId)
           ]);
           return json({ ok: true, subscriptionCancelled: Boolean(subscriptionId) });
         } catch (error) {
