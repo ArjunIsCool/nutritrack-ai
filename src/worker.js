@@ -389,7 +389,7 @@ export default {
     if (!env.FIREBASE_PROJECT_ID) missingConfig.push("FIREBASE_PROJECT_ID");
     if (["/api/meal-analysis", "/api/demo-analysis", "/api/ai-status"].includes(url.pathname) && !env.GEMINI_API_KEY) missingConfig.push("GEMINI_API_KEY");
     if (!env.DB) missingConfig.push("DB");
-    if (["/api/create-subscription", "/api/verify-subscription", "/api/cancel-subscription", "/api/abandon-subscription", "/api/delete-account-data"].includes(url.pathname) && !razorpayConfigured(env)) missingConfig.push("RAZORPAY_API_KEY/RAZORPAY_SECRET");
+    if (["/api/create-subscription", "/api/verify-subscription", "/api/cancel-subscription", "/api/abandon-subscription"].includes(url.pathname) && !razorpayConfigured(env)) missingConfig.push("RAZORPAY_API_KEY/RAZORPAY_SECRET");
     if (missingConfig.length) {
       const geminiPath = ["/api/meal-analysis", "/api/demo-analysis", "/api/ai-status"].includes(url.pathname);
       const subscriptionPath = ["/api/create-subscription", "/api/verify-subscription", "/api/cancel-subscription", "/api/abandon-subscription", "/api/delete-account-data"].includes(url.pathname);
@@ -413,6 +413,7 @@ export default {
           ).bind(userId).first();
           const subscriptionId = entitlement?.razorpay_subscription_id;
           if (subscriptionId) {
+            if (!razorpayConfigured(env)) throw new Error("Razorpay credentials are required to cancel the linked subscription.");
             const remote = await razorpayRequest(env, `/subscriptions/${encodeURIComponent(subscriptionId)}`);
             const status = String(remote.status || "").toLowerCase();
             if (!["cancelled", "completed", "expired"].includes(status)) {
