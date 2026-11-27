@@ -33,10 +33,10 @@ export function subscribeCloudData(uid, onData, onError) {
     }, changeType);
   };
   const stopProfile = onSnapshot(profileDoc(uid), (snapshot) => {
-    profileSnapshot = snapshot; profileReady = true; publish('profile');
+    profileSnapshot = snapshot; profileReady = !snapshot.metadata.fromCache; publish('profile');
   }, onError);
   const stopMeals = onSnapshot(mealsCollection(uid), (snapshot) => {
-    mealsSnapshot = snapshot; mealsReady = true; publish('meals');
+    mealsSnapshot = snapshot; mealsReady = !snapshot.metadata.fromCache; publish('meals');
   }, onError);
   return () => { stopProfile(); stopMeals(); };
 }
