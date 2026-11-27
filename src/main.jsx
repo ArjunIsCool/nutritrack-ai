@@ -4,7 +4,7 @@ import { Activity, Apple, ArrowDownRight, ArrowUpRight, BarChart3, Bell, Calenda
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { deleteUser, onAuthStateChanged, reauthenticateWithPopup, signInWithPopup, signOut } from 'firebase/auth';
 import { auth, firebaseConfigured, googleProvider } from './firebase';
-import { deleteCloudData, loadCloudData, saveCloudData } from './cloudSync';
+import { deleteCloudData, deleteCloudMeal, replaceCloudData, saveCloudData, subscribeCloudData } from './cloudSync';
 import './style.css';
 
 const today = () => new Date().toISOString().slice(0,10);
@@ -80,48 +80,58 @@ function App(){
   useEffect(() => {
     if (!authUser) { setCloudReady(false); return undefined; }
     let active = true;
+    let migrated = false;
+    setCloudReady(false);
     setSyncStatus('loading');
-    loadCloudData(authUser.uid).then(async (cloud) => {
+    const unsubscribe = subscribeCloudData(authUser.uid, async (cloud, changed) => {
       if (!active) return;
-      if (cloud.hasCloudData) {
-        if (cloud.profile) setProfile(cloud.profile);
-        if (cloud.weights) setWeights(cloud.weights);
-        setMeals(cloud.meals);
-      } else {
-        // One-time migration for existing local-only users. After this upload,
-        // Firestore becomes the source of truth and local persistence is disabled.
-        const legacyProfile = read('nt_profile', null);
-        const legacyMeals = read('nt_meals', null);
-        const legacyWeights = read('nt_weights', null);
-        const migratedProfile = legacyProfile || profile;
-        const migratedMeals = Array.isArray(legacyMeals) ? legacyMeals : meals;
-        const migratedWeights = Array.isArray(legacyWeights) ? legacyWeights : weights;
-        if (legacyProfile) setProfile(legacyProfile);
-        if (Array.isArray(legacyMeals)) setMeals(legacyMeals);
-        if (Array.isArray(legacyWeights)) setWeights(legacyWeights);
-        await saveCloudData(authUser.uid, { profile: migratedProfile, meals: migratedMeals, weights: migratedWeights });
-        localStorage.removeItem('nt_profile');
-        localStorage.removeItem('nt_meals');
-        localStorage.removeItem('nt_weights');
-        localStorage.removeItem('nt_setup_done');
+      try {
+        if (changed === 'initial' && !migrated && !cloud.hasCloudData) {
+          migrated = true;
+          const legacyProfile = read('nt_profile', null);
+          const legacyMeals = read('nt_meals', null);
+          const legacyWeights = read('nt_weights', null);
+          const migratedProfile = legacyProfile || profile;
+          const migratedMeals = Array.isArray(legacyMeals) ? legacyMeals : meals;
+          const migratedWeights = Array.isArray(legacyWeights) ? legacyWeights : weights;
+          if (legacyProfile) setProfile(legacyProfile);
+          if (Array.isArray(legacyMeals)) setMeals(legacyMeals);
+          if (Array.isArray(legacyWeights)) setWeights(legacyWeights);
+          await saveCloudData(authUser.uid, { profile: migratedProfile, meals: migratedMeals, weights: migratedWeights });
+          localStorage.removeItem('nt_profile');
+          localStorage.removeItem('nt_meals');
+          localStorage.removeItem('nt_weights');
+          localStorage.removeItem('nt_setup_done');
+        } else {
+          migrated = true;
+          if (changed === 'initial' || changed === 'profile') {
+            if (cloud.profile) setProfile(current => JSON.stringify(current) === JSON.stringify(cloud.profile) ? current : cloud.profile);
+            if (cloud.weights) setWeights(current => JSON.stringify(current) === JSON.stringify(cloud.weights) ? current : cloud.weights);
+          }
+          if (changed === 'initial' || changed === 'meals') {
+            setMeals(current => {
+              const currentById = new Map(current.map((meal) => [String(meal.id), meal]));
+              const remoteById = new Map(cloud.meals.map((meal) => [String(meal.id), meal]));
+              if (currentById.size === remoteById.size && [...remoteById].every(([id, meal]) => JSON.stringify(currentById.get(id)) === JSON.stringify(meal))) return current;
+              return cloud.meals;
+            });
+          }
+        }
+        if (active) { setCloudReady(true); setSyncStatus('synced'); setAuthError(''); }
+      } catch (error) {
+        if (active) { setSyncStatus('error'); setAuthError(error.message || 'Cloud sync failed. Your account data is still available.'); }
       }
-      if (active) { setCloudReady(true); setSyncStatus('synced'); }
-    }).catch((error) => {
-      if (active) {
-        setSyncStatus('error');
-        setAuthError(error.message || 'Cloud sync failed. Your account data is still available.');
-      }
+    }, (error) => {
+      if (active) { setSyncStatus('error'); setAuthError(error.message || 'Cloud sync failed. Your account data is still available.'); }
     });
-    return () => { active = false; };
+    return () => { active = false; unsubscribe(); };
   // Initial hydration is intentionally tied to the signed-in account only.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authUser?.uid]);
   useEffect(() => {
     if (!authUser || !cloudReady || accountDeleteBusy) return undefined;
-    setSyncStatus('saving');
     const timer = setTimeout(() => {
       saveCloudData(authUser.uid, { profile, weights, meals })
-        .then(() => setSyncStatus('synced'))
         .catch((error) => {
           setSyncStatus('error');
           setAuthError(error.message || 'Could not save to cloud. Your account data remains available.');
@@ -305,11 +315,11 @@ function App(){
     finally{setBusy(false);}
   };
   const saveMeal=()=>{if(!draft)return;const t=draft.totals||{};const meal={id:crypto.randomUUID?.()||String(Date.now()),date:draft.date||today(),time:draft.time||'12:00',category:draft.category||'Meal',name:draft.meal_name||'Meal',items:draft.items||[],calories:+t.calories||0,protein:+t.protein||0,carbs:+t.carbs||0,fat:+t.fat||0,fiber:+t.fiber||0,sugar:+t.sugar||0,assessment:draft.assessment||'',quality:draft.quality||'Moderate',source:'gemini'};setMeals(prev=>[meal,...prev]);setDraft(null);setPrompt('');setPage('Dashboard');setNotice('Meal saved to today’s log.');};
-  const removeMeal=id=>{setMeals(m=>m.filter(x=>x.id!==id));setNotice('Meal deleted.');};
+  const removeMeal=id=>{setMeals(m=>m.filter(x=>x.id!==id));if(authUser&&cloudReady)deleteCloudMeal(authUser.uid,id).catch(error=>{setSyncStatus('error');setAuthError(error.message||'Could not delete this meal from the cloud.');});setNotice('Meal deleted.');};
   const saveProfile=()=>{setEditingProfile(false);setNotice('Your goals have been updated.');};
   const saveWeight=()=>{const n=Number(weightInput);if(!n||n<25||n>350)return;setWeights(w=>[{date:today(),weight:n},...w.filter(x=>x.date!==today())]);setProfile(p=>({...p,weight:n}));setWeightInput('');setNotice('Weight entry saved.');};
   const exportData=()=>{const data={app:'NutriTrack AI',version:1,exportedAt:new Date().toISOString(),profile,meals,weights};const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=`nutritrack-backup-${today()}.json`;a.click();URL.revokeObjectURL(url);setNotice('Backup exported.');};
-  const importData=e=>{const file=e.target.files?.[0];if(!file)return;const reader=new FileReader();reader.onload=()=>{try{const d=JSON.parse(reader.result);if(d.app!=='NutriTrack AI'||!Array.isArray(d.meals)||!d.profile)throw new Error('This does not look like a NutriTrack AI backup.');if(!confirm(`Import ${d.meals.length} meals and replace current profile/history?`))return;setProfile(d.profile);setMeals(d.meals);setWeights(Array.isArray(d.weights)?d.weights:[]);setNotice('Backup imported successfully.');}catch(err){setError(err.message||'Could not read backup file.');}};reader.readAsText(file);e.target.value='';};
+  const importData=e=>{const file=e.target.files?.[0];if(!file)return;const reader=new FileReader();reader.onload=async()=>{try{const d=JSON.parse(reader.result);if(d.app!=='NutriTrack AI'||!Array.isArray(d.meals)||!d.profile)throw new Error('This does not look like a NutriTrack AI backup.');if(!confirm(`Import ${d.meals.length} meals and replace current profile/history?`))return;const nextWeights=Array.isArray(d.weights)?d.weights:[];if(authUser)await replaceCloudData(authUser.uid,{profile:d.profile,meals:d.meals,weights:nextWeights});setProfile(d.profile);setMeals(d.meals);setWeights(nextWeights);setNotice('Backup imported successfully.');}catch(err){setError(err.message||'Could not read backup file.');}};reader.readAsText(file);e.target.value='';};
   const testConnection=async()=>{
     if(!authUser){setError('Sign in with Google before testing AI.');return;}
     setBusy(true);setError('');
@@ -337,7 +347,7 @@ function App(){
     </aside>
     {mobileNav&&<div className="scrim" onClick={()=>setMobileNav(false)}/>}
     <main className="main-area">
-      <header className="topbar"><div className="top-left"><button className="icon-btn mobile-menu" onClick={()=>setMobileNav(true)}><Menu size={20}/></button><div><div className="eyebrow">THURSDAY, {new Date().toLocaleDateString('en-US',{month:'long',day:'numeric',year:'numeric'}).toUpperCase()}</div><h1>{page==='Dashboard'?'Your daily overview':page}</h1></div></div><div className="top-actions"><div className="local-pill"><span className="live-dot"/> {authUser ? (syncStatus === 'synced' ? 'Cloud synced' : syncStatus === 'saving' ? 'Syncing…' : syncStatus === 'error' ? 'Sync issue' : 'Connecting…') : 'Saved on this device'}</div><button className="icon-btn" title="Settings" onClick={()=>setPage('Settings')}><Settings size={19}/></button><div className="avatar top-avatar">Y</div></div></header>
+      <header className="topbar"><div className="top-left"><button className="icon-btn mobile-menu" onClick={()=>setMobileNav(true)}><Menu size={20}/></button><div><div className="eyebrow">THURSDAY, {new Date().toLocaleDateString('en-US',{month:'long',day:'numeric',year:'numeric'}).toUpperCase()}</div><h1>{page==='Dashboard'?'Your daily overview':page}</h1></div></div><div className="top-actions"><div className="local-pill"><span className="live-dot"/> {authUser ? (syncStatus === 'error' ? 'Cloud issue' : 'Cloud backup') : 'Saved on this device'}</div><button className="icon-btn" title="Settings" onClick={()=>setPage('Settings')}><Settings size={19}/></button><div className="avatar top-avatar">Y</div></div></header>
       <div className="content">
         {page==='Dashboard'&&<>
           <section className="welcome-row"><div><h2>Good day. <span>Let’s make it count.</span></h2><p>A little awareness at every meal adds up.</p></div><button className="primary-btn" onClick={()=>setPage('AI Food Logger')}><Plus size={17}/> Log a meal</button></section>
@@ -374,14 +384,14 @@ function App(){
             {!firebaseConfigured && <div className="field-help">Google sign-in is not configured yet. Follow <b>docs/FIREBASE_SETUP.md</b>, add the Firebase environment variables and redeploy.</div>}
             {authUser ? <>
               <div className="account-summary"><div className="avatar">{(authUser.displayName || authUser.email || 'N').slice(0,1).toUpperCase()}</div><div><b>{authUser.displayName || 'NutriTrack user'}</b><small>{authUser.email}</small></div><span className="quality-pill good">Signed in</span></div>
-              <div className="field-help">{syncStatus === 'synced' ? 'Your profile, meals and weight history are backed up to your account.' : syncStatus === 'saving' || syncStatus === 'loading' ? 'Synchronizing your data with the cloud…' : syncStatus === 'error' ? 'Cloud sync needs attention. Your local data is still available.' : 'Cloud synchronization is initializing.'}</div>
+              <div className="field-help">{syncStatus === 'error' ? 'Cloud sync needs attention. Your local data is still available.' : 'Your profile, meals and weight history are backed up to your account and stay up to date across your devices.'}</div>
               <button className="secondary-btn" onClick={handleSignOut}><LogOut size={15}/> Sign out</button>
             </> : <button className="primary-btn" onClick={handleGoogleSignIn} disabled={authLoading || !firebaseConfigured}>{authLoading ? <LoaderCircle className="spin" size={16}/> : <ShieldCheck size={16}/>} Continue with Google</button>}
             {authError && <div className="error-box">{authError}</div>}
             <div className="field-help">Your account is the source of truth for your nutrition data.</div>
           </div>
           <div className="card settings-card"><div className="settings-title"><div className="settings-icon gemini"><Sparkles size={19}/></div><div><h3>NutriTrack AI</h3><p>Managed Gemini service for meal analysis.</p></div><span className="connected-dot"/></div><div className="field-help">AI requests are securely sent through NutriTrack's server. Your API key is never stored in this browser.</div><label className="field-label">GEMINI MODEL</label><select value={model} onChange={e=>{setModel(e.target.value);}}><option value="gemini-3.5-flash-lite">Gemini 3.5 Flash-Lite · lower cost</option><option value="gemini-3.8-flash">Gemini 3.8 Flash</option></select><div className="settings-actions"><button className="secondary-btn" onClick={testConnection} disabled={busy||!authUser}>{busy?<LoaderCircle className="spin" size={15}/>:<Zap size={15}/>} Test AI service</button></div>{!authUser&&<div className="field-help">Sign in with Google in the Account & cloud sync section to use AI.</div>}{error&&<div className="error-box">{error}</div>}</div>
-          <div className="card settings-card"><div className="settings-title"><div className="settings-icon"><Wallet size={19}/></div><div><h3>Data & backups</h3><p>Your meals and profile are stored in your cloud account.</p></div></div><div className="storage-info"><div><b>{meals.length}</b><small>Meals stored</small></div><div><b>{weights.length}</b><small>Weight entries</small></div><div><b>{authUser ? (syncStatus === 'synced' ? 'Cloud' : 'Pending') : 'Local'}</b><small>Storage mode</small></div></div><button className="backup-action" onClick={exportData}><CloudDownload size={17}/><div><b>Export backup</b><small>Download profile, meals and weight history as JSON</small></div><ChevronRight size={16}/></button><label className="backup-action import-label"><CloudDownload size={17}/><div><b>Import backup</b><small>Restore from a NutriTrack JSON backup</small></div><ChevronRight size={16}/><input type="file" accept="application/json,.json" onChange={importData}/></label><div className="field-help">Import replaces your account profile and history. Export backups regularly.</div></div>
+          <div className="card settings-card"><div className="settings-title"><div className="settings-icon"><Wallet size={19}/></div><div><h3>Data & backups</h3><p>Your meals and profile are stored in your cloud account.</p></div></div><div className="storage-info"><div><b>{meals.length}</b><small>Meals stored</small></div><div><b>{weights.length}</b><small>Weight entries</small></div><div><b>{authUser ? (syncStatus === 'error' ? 'Issue' : 'Cloud') : 'Local'}</b><small>Storage mode</small></div></div><button className="backup-action" onClick={exportData}><CloudDownload size={17}/><div><b>Export backup</b><small>Download profile, meals and weight history as JSON</small></div><ChevronRight size={16}/></button><label className="backup-action import-label"><CloudDownload size={17}/><div><b>Import backup</b><small>Restore from a NutriTrack JSON backup</small></div><ChevronRight size={16}/><input type="file" accept="application/json,.json" onChange={importData}/></label><div className="field-help">Import replaces your account profile and history. Export backups regularly.</div></div>
           <div className="card settings-card"><div className="settings-title"><div className="settings-icon"><ShieldCheck size={19}/></div><div><h3>Privacy & security</h3><p>Understand where your information goes.</p></div></div><div className="privacy-list"><p><Check size={15}/> Meal history and goals are stored in your authenticated cloud account.</p><p><Check size={15}/> Only meal prompts are sent to Gemini when you request analysis.</p><p><Check size={15}/> An account is required to access NutriTrack AI.</p><p><Check size={15}/> Gemini credentials are kept on the server and are not exposed in the browser.</p></div><button className="danger-btn" onClick={handleDeleteAccount} disabled={accountDeleteBusy}>{accountDeleteBusy?<LoaderCircle className="spin" size={15}/>:<Trash2 size={15}/>} {accountDeleteBusy?'Deleting account…':'Delete account permanently'}</button>{accountDeleteError&&<div className="error-box">{accountDeleteError}</div>}<div className="field-help">Permanently deletes your sign-in, cloud data and usage records. Any Razorpay subscription is cancelled immediately before deletion.</div></div></div></>}
       </div>
       <footer className="footer"><span>© {new Date().getFullYear()} NutriTrack AI</span><span>Made for mindful everyday nutrition <HeartPulse size={13}/></span></footer>
