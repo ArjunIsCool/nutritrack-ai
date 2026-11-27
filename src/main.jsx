@@ -104,9 +104,14 @@ function App(){
           localStorage.removeItem('nt_setup_done');
         } else {
           migrated = true;
-          if (cloud.profile) setProfile(cloud.profile);
-          if (cloud.weights) setWeights(cloud.weights);
-          setMeals(cloud.meals);
+          if (cloud.profile) setProfile(current => JSON.stringify(current) === JSON.stringify(cloud.profile) ? current : cloud.profile);
+          if (cloud.weights) setWeights(current => JSON.stringify(current) === JSON.stringify(cloud.weights) ? current : cloud.weights);
+          setMeals(current => {
+            const currentById = new Map(current.map((meal) => [String(meal.id), meal]));
+            const remoteById = new Map(cloud.meals.map((meal) => [String(meal.id), meal]));
+            if (currentById.size === remoteById.size && [...remoteById].every(([id, meal]) => JSON.stringify(currentById.get(id)) === JSON.stringify(meal))) return current;
+            return cloud.meals;
+          });
         }
         if (active) { setCloudReady(true); setSyncStatus('synced'); setAuthError(''); }
       } catch (error) {
