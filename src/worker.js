@@ -11,6 +11,8 @@ const MINUTE_LIMIT = 6;
 const MIN_REQUEST_INTERVAL_MS = 5000;
 const MINUTE_WINDOW_MS = 60_000;
 const DEMO_LIMIT = 5;
+const RAZORPAY_API = "https://api.razorpay.com/v1";
+const SUBSCRIPTION_PLANS = { monthly: { amount: 7500, period: "monthly", interval: 1, totalCount: 120, label: "NutriTrack AI Monthly" }, annual: { amount: 50000, period: "yearly", interval: 1, totalCount: 10, label: "NutriTrack AI Annual" } };
 
 const json = (data, status = 200) => new Response(JSON.stringify(data), {
   status,
@@ -186,6 +188,164 @@ async function reserveAnalysis(db, userId, now = Date.now()) {
   };
 }
 
+
+function razorpayConfigured(env) {
+  return Boolean(env.RAZORPAY_API_KEY && env.RAZORPAY_SECRET);
+}
+function razorpayCredentials(env) {
+  // Cloudflare secrets are supplied as strings. Trim accidental whitespace
+  // before constructing the Basic Auth credential pair.
+  const keyId = String(env.RAZORPAY_API_KEY || "").trim();
+  const keySecret = String(env.RAZORPAY_SECRET || "").trim();
+  if (!keyId || !keySecret) throw new Error("Razorpay API credentials are not configured.");
+  return { keyId, keySecret };
+}
+function razorpayAuth(env) {
+  const { keyId, keySecret } = razorpayCredentials(env);
+  // Razorpay API keys are ASCII; Basic Auth encodes the literal KEY_ID:SECRET pair.
+  return "Basic " + btoa(keyId + ":" + keySecret);
+}
+async function razorpayRequest(env, path, method = "GET", body) {
+  const response = await fetch(`${RAZORPAY_API}${path}`, {
+    method, headers: { Authorization: razorpayAuth(env), "Content-Type": "application/json" },
+    ...(body ? { body: JSON.stringify(body) } : {}),
+  });
+  const raw = await response.text();
+  let data = {};
+  try { data = raw ? JSON.parse(raw) : {}; } catch {}
+  if (!response.ok) {
+    const apiError = data?.error || data;
+    const description = apiError?.description || apiError?.message || (raw ? raw.slice(0, 500) : "No response body");
+    const code = apiError?.code ? ` [${apiError.code}]` : "";
+    throw new Error(`Razorpay ${method} ${path} failed (HTTP ${response.status})${code}: ${description}`);
+  }
+  if (!data || typeof data !== "object") throw new Error(`Razorpay ${method} ${path} returned an invalid response.`);
+  return data;
+}
+async function getOrCreatePlan(env, code) {
+  const config = SUBSCRIPTION_PLANS[code];
+  const existing = await env.DB.prepare("SELECT razorpay_plan_id FROM razorpay_plans WHERE plan_code = ?").bind(code).first();
+  if (existing?.razorpay_plan_id) return existing.razorpay_plan_id;
+  const plan = await razorpayRequest(env, "/plans", "POST", {
+    period: config.period, interval: config.interval,
+    item: { name: config.label, amount: config.amount, currency: "INR", description: "NutriTrack AI subscription" },
+    notes: { product: "NutriTrack AI", plan_code: code },
+  });
+  await env.DB.prepare("INSERT OR IGNORE INTO razorpay_plans (plan_code, razorpay_plan_id, created_at) VALUES (?, ?, ?)")
+    .bind(code, plan.id, Date.now()).run();
+  const saved = await env.DB.prepare("SELECT razorpay_plan_id FROM razorpay_plans WHERE plan_code = ?").bind(code).first();
+  return saved.razorpay_plan_id;
+}
+async function releaseAbandonedSubscription(env, userId, subscriptionId) {
+  const claim = await env.DB.prepare(
+    "SELECT provider_subscription_id FROM trial_claims WHERE user_id = ? AND provider = 'razorpay' AND provider_subscription_id = ? AND status = 'pending'"
+  ).bind(userId, subscriptionId).first();
+  if (!claim) return { released: false, reason: "not_pending" };
+
+  // Confirm the provider-side state before releasing the local lock. Never
+  // release an authenticated/active subscription just because Checkout closed.
+  const remote = await razorpayRequest(env, `/subscriptions/${encodeURIComponent(subscriptionId)}`);
+  const status = String(remote.status || "").toLowerCase();
+  const hasCustomer = Boolean(remote.customer_id);
+  const authAttempts = Number(remote.auth_attempts || 0);
+  const safeToRelease = !hasCustomer && authAttempts === 0
+    && (status === "created" || status === "expired" || status === "cancelled");
+  if (!safeToRelease) return { released: false, reason: "authorization_may_have_succeeded", status };
+
+  if (status === "created") {
+    // Do not clear the local lock unless Razorpay confirms the cancellation request.
+    await razorpayRequest(env, `/subscriptions/${encodeURIComponent(subscriptionId)}/cancel`, "POST", { cancel_at_cycle_end: 0 });
+  }
+  await env.DB.batch([
+    env.DB.prepare("UPDATE trial_claims SET status = 'expired' WHERE user_id = ? AND provider_subscription_id = ? AND status = 'pending'")
+      .bind(userId, subscriptionId),
+    env.DB.prepare("UPDATE user_entitlements SET status = 'demo', razorpay_subscription_id = NULL, plan_code = NULL, updated_at = ? WHERE user_id = ? AND razorpay_subscription_id = ? AND status = 'demo'")
+      .bind(Date.now(), userId, subscriptionId),
+  ]);
+  return { released: true };
+}
+
+async function createSubscription(env, userId, code) {
+  const access = await getAccess(env.DB, userId);
+  if (access.status === "trialing" || access.status === "active") throw new Error("Your account already has premium access.");
+  const pending = await env.DB.prepare("SELECT provider_subscription_id FROM trial_claims WHERE user_id = ? AND status = 'pending' ORDER BY created_at DESC LIMIT 1").bind(userId).first();
+  if (pending) throw new Error("A subscription authorization is already pending for this account. Complete or wait for that checkout first.");
+  const config = SUBSCRIPTION_PLANS[code];
+  const planId = await getOrCreatePlan(env, code);
+  const now = Math.floor(Date.now() / 1000);
+  const startAt = now + 3 * 24 * 60 * 60;
+  const subscription = await razorpayRequest(env, "/subscriptions", "POST", {
+    plan_id: planId, total_count: config.totalCount, quantity: 1,
+    customer_notify: true, start_at: startAt, expire_by: now + 24 * 60 * 60,
+    notes: { user_id: userId, plan_code: code, trial_days: "3" },
+  });
+  await env.DB.prepare("INSERT INTO trial_claims (id, user_id, provider, provider_subscription_id, started_at, ends_at, status, created_at) VALUES (?, ?, 'razorpay', ?, ?, ?, 'pending', ?)")
+    .bind(crypto.randomUUID(), userId, subscription.id, now * 1000, startAt * 1000, Date.now()).run();
+  await env.DB.prepare("INSERT INTO user_entitlements (user_id, status, plan_code, razorpay_subscription_id, updated_at) VALUES (?, 'demo', ?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET plan_code = excluded.plan_code, razorpay_subscription_id = excluded.razorpay_subscription_id, updated_at = excluded.updated_at")
+    .bind(userId, code, subscription.id, Date.now()).run();
+  return { id: subscription.id, key: env.RAZORPAY_API_KEY, planCode: code, amount: config.amount, currency: "INR", startAt: startAt * 1000, shortUrl: subscription.short_url || null };
+}
+async function verifyWebhookSignature(rawBody, signature, secret) {
+  if (!signature || !secret) return false;
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const digest = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(rawBody));
+  const expected = [...new Uint8Array(digest)].map(x => x.toString(16).padStart(2, "0")).join("");
+  if (expected.length !== signature.length) return false;
+  let diff = 0;
+  for (let i = 0; i < expected.length; i++) diff |= expected.charCodeAt(i) ^ signature.charCodeAt(i);
+  return diff === 0;
+}
+async function cancelRazorpaySubscription(env, id) {
+  try { await razorpayRequest(env, `/subscriptions/${encodeURIComponent(id)}/cancel`, "POST", { cancel_at_cycle_end: 0 }); } catch {}
+}
+async function handleRazorpayWebhook(request, env) {
+  if (!env.RAZORPAY_WEBHOOK_SECRET) return json({ error: "Webhook secret is not configured." }, 503);
+  const raw = await request.text();
+  if (raw.length > 256_000) return json({ error: "Payload too large." }, 413);
+  const signature = request.headers.get("x-razorpay-signature") || "";
+  if (!await verifyWebhookSignature(raw, signature, env.RAZORPAY_WEBHOOK_SECRET)) return json({ error: "Invalid webhook signature." }, 401);
+  let event; try { event = JSON.parse(raw); } catch { return json({ error: "Invalid webhook payload." }, 400); }
+  const eventId = request.headers.get("x-razorpay-event-id") || event.id;
+  if (!eventId) return json({ error: "Missing event identifier." }, 400);
+  const subscription = event.payload?.subscription?.entity;
+  const subscriptionId = subscription?.id;
+  // Checkout verifies the initial authorization; payment.authorized is not needed here.
+  if (!subscriptionId) return json({ ok: true, ignored: true });
+  const prior = await env.DB.prepare("SELECT provider_event_id FROM subscription_events WHERE provider_event_id = ?").bind(eventId).first();
+  if (prior) return json({ ok: true, duplicate: true });
+  const claim = await env.DB.prepare("SELECT user_id FROM trial_claims WHERE provider_subscription_id = ?").bind(subscriptionId).first();
+  if (!claim) return json({ ok: true, ignored: true });
+  const userId = claim.user_id, now = Date.now(), eventType = event.event || "unknown";
+  const statements = [];
+  if (["subscription.activated", "subscription.charged", "subscription.resumed"].includes(eventType)) {
+    const paidUntil = Number(subscription.current_end || subscription.charge_at || 0) * 1000 || null;
+    statements.push(env.DB.prepare("UPDATE user_entitlements SET status = 'active', paid_until = COALESCE(?, paid_until), updated_at = ? WHERE user_id = ? AND razorpay_subscription_id = ?").bind(paidUntil, now, userId, subscriptionId));
+    statements.push(env.DB.prepare("UPDATE trial_claims SET status = 'converted' WHERE provider_subscription_id = ?").bind(subscriptionId));
+  } else if (["subscription.pending", "subscription.halted", "subscription.paused"].includes(eventType)) {
+    statements.push(env.DB.prepare("UPDATE user_entitlements SET status = 'past_due', updated_at = ? WHERE user_id = ? AND razorpay_subscription_id = ?").bind(now, userId, subscriptionId));
+  } else if (eventType === "subscription.cancelled") {
+    statements.push(env.DB.prepare("UPDATE user_entitlements SET status = 'cancelled', cancel_at_period_end = 0, updated_at = ? WHERE user_id = ? AND razorpay_subscription_id = ?").bind(now, userId, subscriptionId));
+    statements.push(env.DB.prepare("UPDATE trial_claims SET status = 'cancelled' WHERE provider_subscription_id = ? AND status IN ('pending', 'trialing')").bind(subscriptionId));
+  } else if (eventType === "subscription.completed") {
+    statements.push(env.DB.prepare("UPDATE user_entitlements SET status = 'expired', cancel_at_period_end = 0, updated_at = ? WHERE user_id = ? AND razorpay_subscription_id = ?").bind(now, userId, subscriptionId));
+    statements.push(env.DB.prepare("UPDATE trial_claims SET status = 'converted' WHERE provider_subscription_id = ?").bind(subscriptionId));
+  }
+  statements.push(env.DB.prepare("INSERT INTO subscription_events (provider_event_id, provider, event_type, processed_at) VALUES (?, 'razorpay', ?, ?)").bind(eventId, eventType, now));
+  try { await env.DB.batch(statements); return json({ ok: true }); }
+  catch (error) { console.error("Could not process Razorpay subscription webhook", { subscriptionId, event: eventType, message: error.message }); return json({ error: "Could not process subscription event." }, 500); }
+}
+
+async function verifySubscriptionCheckoutSignature(paymentId, subscriptionId, signature, secret) {
+  if (!paymentId || !subscriptionId || !signature || !secret) return false;
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const digest = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(paymentId + "|" + subscriptionId));
+  const expected = [...new Uint8Array(digest)].map(value => value.toString(16).padStart(2, "0")).join("");
+  if (expected.length !== signature.length) return false;
+  let diff = 0;
+  for (let i = 0; i < expected.length; i++) diff |= expected.charCodeAt(i) ^ signature.charCodeAt(i);
+  return diff === 0;
+}
+
 async function callGemini(env, model, prompt, test = false) {
   const response = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(env.GEMINI_API_KEY)}`,
@@ -219,7 +379,8 @@ export default {
     const url = new URL(request.url);
     if (!url.pathname.startsWith("/api/")) return env.ASSETS.fetch(request);
 
-    const allowedPaths = ["/api/meal-analysis", "/api/demo-analysis", "/api/ai-status", "/api/usage", "/api/access"];
+    if (url.pathname === "/api/razorpay-webhook" && request.method === "POST") return handleRazorpayWebhook(request, env);
+    const allowedPaths = ["/api/meal-analysis", "/api/demo-analysis", "/api/ai-status", "/api/usage", "/api/access", "/api/create-subscription", "/api/verify-subscription", "/api/cancel-subscription", "/api/abandon-subscription"];
     if (request.method !== "POST" || !allowedPaths.includes(url.pathname)) {
       return json({ error: "Not found." }, 404);
     }
@@ -228,8 +389,12 @@ export default {
     if (!env.FIREBASE_PROJECT_ID) missingConfig.push("FIREBASE_PROJECT_ID");
     if (["/api/meal-analysis", "/api/demo-analysis", "/api/ai-status"].includes(url.pathname) && !env.GEMINI_API_KEY) missingConfig.push("GEMINI_API_KEY");
     if (!env.DB) missingConfig.push("DB");
+    if (["/api/create-subscription", "/api/verify-subscription", "/api/cancel-subscription", "/api/abandon-subscription"].includes(url.pathname) && !razorpayConfigured(env)) missingConfig.push("RAZORPAY_API_KEY/RAZORPAY_SECRET");
     if (missingConfig.length) {
-      return json({ error: "AI service is not configured yet.", missing: missingConfig }, 503);
+      const geminiPath = ["/api/meal-analysis", "/api/demo-analysis", "/api/ai-status"].includes(url.pathname);
+      const subscriptionPath = ["/api/create-subscription", "/api/verify-subscription", "/api/cancel-subscription", "/api/abandon-subscription"].includes(url.pathname);
+      const message = geminiPath ? "Gemini AI is not configured on this Preview deployment." : subscriptionPath ? "Razorpay subscription service is not configured on this Preview deployment." : "Account service is not configured on this Preview deployment.";
+      return json({ error: message, missing: missingConfig }, 503);
     }
 
     let userId;
@@ -237,6 +402,58 @@ export default {
       userId = await authenticate(request, env.FIREBASE_PROJECT_ID);
     } catch {
       return json({ error: "Please sign in again before using AI meal analysis." }, 401);
+    }
+
+    if (url.pathname === "/api/create-subscription" || url.pathname === "/api/verify-subscription" || url.pathname === "/api/cancel-subscription" || url.pathname === "/api/abandon-subscription") {
+      let body; try { body = await request.json(); } catch { return json({ error: "Invalid request body." }, 400); }
+      if (url.pathname === "/api/verify-subscription") {
+        const subscriptionId = typeof body.subscriptionId === "string" ? body.subscriptionId : "";
+        const paymentId = typeof body.paymentId === "string" ? body.paymentId : "";
+        const signature = typeof body.signature === "string" ? body.signature : "";
+        if (!/^sub_[A-Za-z0-9]+$/.test(subscriptionId) || !/^pay_[A-Za-z0-9]+$/.test(paymentId) || !signature) return json({ error: "Invalid Razorpay Checkout response." }, 400);
+        try {
+          const claim = await env.DB.prepare("SELECT user_id, provider_subscription_id, ends_at, status FROM trial_claims WHERE user_id = ? AND provider_subscription_id = ? AND provider = 'razorpay'").bind(userId, subscriptionId).first();
+          if (!claim) return json({ error: "Subscription was not found for this account." }, 404);
+          if (!await verifySubscriptionCheckoutSignature(paymentId, claim.provider_subscription_id, signature, razorpayCredentials(env).keySecret)) return json({ error: "Razorpay payment verification failed." }, 400);
+          if (claim.status === "trialing" || claim.status === "converted") return json({ ok: true, alreadyVerified: true });
+          if (claim.status !== "pending") return json({ error: "This subscription is no longer pending." }, 409);
+          const now = Date.now();
+          await env.DB.batch([
+            env.DB.prepare("UPDATE trial_claims SET status = 'trialing' WHERE user_id = ? AND provider_subscription_id = ? AND status = 'pending'").bind(userId, subscriptionId),
+            env.DB.prepare("UPDATE user_entitlements SET status = 'trialing', trial_started_at = ?, trial_ends_at = ?, razorpay_subscription_id = ?, updated_at = ? WHERE user_id = ? AND razorpay_subscription_id = ?").bind(now, claim.ends_at, subscriptionId, now, userId, subscriptionId)
+          ]);
+          return json({ ok: true, trialEndsAt: claim.ends_at });
+        } catch (error) {
+          console.error("Razorpay Checkout verification failed", { subscriptionId, message: error.message });
+          return json({ error: "Could not verify the subscription right now. Please try again." }, 503);
+        }
+      }
+      if (url.pathname === "/api/abandon-subscription") {
+        const subscriptionId = typeof body.subscriptionId === "string" ? body.subscriptionId : "";
+        if (!/^sub_[A-Za-z0-9]+$/.test(subscriptionId)) return json({ error: "Invalid subscription reference." }, 400);
+        try {
+          const result = await releaseAbandonedSubscription(env, userId, subscriptionId);
+          return json({ ok: true, ...result });
+        } catch (error) {
+          console.error("Could not reconcile abandoned Razorpay subscription", { message: error.message });
+          return json({ error: "Could not safely release this checkout yet. Please try again shortly." }, 502);
+        }
+      }
+      if (url.pathname === "/api/create-subscription") {
+        const code = body.planCode;
+        if (!Object.hasOwn(SUBSCRIPTION_PLANS, code)) return json({ error: "Choose a valid subscription plan." }, 400);
+        try { return json({ ok: true, checkout: await createSubscription(env, userId, code) }); }
+        catch (error) {
+          console.error("Razorpay subscription creation failed", { message: error.message, planCode: code });
+          return json({ error: error.message || "Could not start checkout." }, 502);
+        }
+      }
+      const row = await env.DB.prepare("SELECT razorpay_subscription_id FROM user_entitlements WHERE user_id = ?").bind(userId).first();
+      if (!row?.razorpay_subscription_id) return json({ error: "No subscription is linked to this account." }, 404);
+      try {
+        await razorpayRequest(env, `/subscriptions/${encodeURIComponent(row.razorpay_subscription_id)}/cancel`, "POST", { cancel_at_cycle_end: 1 });
+        return json({ ok: true, message: "Cancellation requested. Access remains subject to the current paid/trial period." });
+      } catch (error) { return json({ error: error.message || "Could not cancel subscription." }, 502); }
     }
 
     if (url.pathname === "/api/access") {
