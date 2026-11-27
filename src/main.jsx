@@ -3,7 +3,8 @@ import { createRoot } from 'react-dom/client';
 import { Activity, Apple, ArrowDownRight, ArrowUpRight, BarChart3, Bell, CalendarDays, Check, ChevronDown, ChevronRight, CircleHelp, Clock3, CloudDownload, Coffee, Flame, Gauge, HeartPulse, History, Home, Leaf, LoaderCircle, LogOut, Menu, MessageSquareText, MoreHorizontal, Plus, Scale, Settings, ShieldCheck, Sparkles, Target, Trash2, Utensils, Wallet, X, Zap } from 'lucide-react';
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { deleteUser, onAuthStateChanged, reauthenticateWithPopup, signInWithPopup, signOut } from 'firebase/auth';
-import { auth, firebaseConfigured, googleProvider } from './firebase';
+import { auth, firebaseConfigured, functions, googleProvider } from './firebase';
+import { httpsCallable } from 'firebase/functions';
 import { deleteCloudData, deleteCloudMeal, replaceCloudData, saveCloudData, subscribeCloudData } from './cloudSync';
 import './style.css';
 
@@ -58,6 +59,8 @@ function App(){
   const [billingMessage,setBillingMessage] = useState('');
   const [billingError,setBillingError] = useState('');
   const [accountDeleteBusy,setAccountDeleteBusy] = useState(false);
+  const [sessionRevokeBusy,setSessionRevokeBusy] = useState(false);
+  const [sessionRevokeError,setSessionRevokeError] = useState('');
   const [accountDeleteError,setAccountDeleteError] = useState('');
   const targets = useMemo(()=>calcTargets(profile),[profile]);
   const todayMeals = meals.filter(m=>m.date===today());
@@ -189,6 +192,22 @@ function App(){
       setProfile(seedProfile); setMeals([]); setWeights([]); setAiUsage(null); setAccess(null); setDemoUsage(null);
       setNotice('Signed out.');
     } catch (error) { setAuthError(error.message || 'Could not sign out.'); }
+  };
+  const handleRevokeSessions = async () => {
+    if (!authUser || !auth || !functions || sessionRevokeBusy) return;
+    if (!window.confirm('Sign out NutriTrack AI on every device? You will be signed out here too and need to sign in again.')) return;
+    setSessionRevokeBusy(true); setSessionRevokeError('');
+    try {
+      await reauthenticateWithPopup(authUser, googleProvider);
+      await authUser.getIdToken(true);
+      await httpsCallable(functions, 'revokeMySessions')({});
+      await signOut(auth);
+      setCloudReady(false); setProfile(seedProfile); setMeals([]); setWeights([]);
+      setAiUsage(null); setAccess(null); setDemoUsage(null);
+      setNotice('You have been signed out on all devices.');
+    } catch (error) {
+      setSessionRevokeError(error.code === 'auth/popup-closed-by-user' ? 'Google verification was cancelled. No sessions were changed.' : (error.message || 'Could not sign out on all devices. Please try again.'));
+    } finally { setSessionRevokeBusy(false); }
   };
   const handleDeleteAccount = async () => {
     if (!authUser || !auth) return;
@@ -392,7 +411,7 @@ function App(){
           </div>
           <div className="card settings-card"><div className="settings-title"><div className="settings-icon gemini"><Sparkles size={19}/></div><div><h3>NutriTrack AI</h3><p>Managed Gemini service for meal analysis.</p></div><span className="connected-dot"/></div><div className="field-help">AI requests are securely sent through NutriTrack's server. Your API key is never stored in this browser.</div><label className="field-label">GEMINI MODEL</label><select value={model} onChange={e=>{setModel(e.target.value);}}><option value="gemini-3.5-flash-lite">Gemini 3.5 Flash-Lite · lower cost</option><option value="gemini-3.8-flash">Gemini 3.8 Flash</option></select><div className="settings-actions"><button className="secondary-btn" onClick={testConnection} disabled={busy||!authUser}>{busy?<LoaderCircle className="spin" size={15}/>:<Zap size={15}/>} Test AI service</button></div>{!authUser&&<div className="field-help">Sign in with Google in the Account & cloud sync section to use AI.</div>}{error&&<div className="error-box">{error}</div>}</div>
           <div className="card settings-card"><div className="settings-title"><div className="settings-icon"><Wallet size={19}/></div><div><h3>Data & backups</h3><p>Your meals and profile are stored in your cloud account.</p></div></div><div className="storage-info"><div><b>{meals.length}</b><small>Meals stored</small></div><div><b>{weights.length}</b><small>Weight entries</small></div><div><b>{authUser ? (syncStatus === 'error' ? 'Issue' : 'Cloud') : 'Local'}</b><small>Storage mode</small></div></div><button className="backup-action" onClick={exportData}><CloudDownload size={17}/><div><b>Export backup</b><small>Download profile, meals and weight history as JSON</small></div><ChevronRight size={16}/></button><label className="backup-action import-label"><CloudDownload size={17}/><div><b>Import backup</b><small>Restore from a NutriTrack JSON backup</small></div><ChevronRight size={16}/><input type="file" accept="application/json,.json" onChange={importData}/></label><div className="field-help">Import replaces your account profile and history. Export backups regularly.</div></div>
-          <div className="card settings-card"><div className="settings-title"><div className="settings-icon"><ShieldCheck size={19}/></div><div><h3>Privacy & security</h3><p>Understand where your information goes.</p></div></div><div className="privacy-list"><p><Check size={15}/> Meal history and goals are stored in your authenticated cloud account.</p><p><Check size={15}/> Only meal prompts are sent to Gemini when you request analysis.</p><p><Check size={15}/> An account is required to access NutriTrack AI.</p><p><Check size={15}/> Gemini credentials are kept on the server and are not exposed in the browser.</p></div><button className="danger-btn" onClick={handleDeleteAccount} disabled={accountDeleteBusy}>{accountDeleteBusy?<LoaderCircle className="spin" size={15}/>:<Trash2 size={15}/>} {accountDeleteBusy?'Deleting account…':'Delete account permanently'}</button>{accountDeleteError&&<div className="error-box">{accountDeleteError}</div>}<div className="field-help">Permanently deletes your sign-in, cloud data and usage records. Any Razorpay subscription is cancelled immediately before deletion.</div></div></div></>}
+          <div className="card settings-card"><div className="settings-title"><div className="settings-icon"><ShieldCheck size={19}/></div><div><h3>Privacy & security</h3><p>Understand where your information goes.</p></div></div><div className="privacy-list"><p><Check size={15}/> Meal history and goals are stored in your authenticated cloud account.</p><p><Check size={15}/> Only meal prompts are sent to Gemini when you request analysis.</p><p><Check size={15}/> An account is required to access NutriTrack AI.</p><p><Check size={15}/> Gemini credentials are kept on the server and are not exposed in the browser.</p></div><button className="secondary-btn" onClick={handleRevokeSessions} disabled={sessionRevokeBusy||accountDeleteBusy}>{sessionRevokeBusy?<LoaderCircle className="spin" size={15}/>:<LogOut size={15}/>} {sessionRevokeBusy?'Signing out everywhere…':'Sign out on all devices'}</button>{sessionRevokeError&&<div className="error-box">{sessionRevokeError}</div>}<button className="danger-btn" onClick={handleDeleteAccount} disabled={accountDeleteBusy}>{accountDeleteBusy?<LoaderCircle className="spin" size={15}/>:<Trash2 size={15}/>} {accountDeleteBusy?'Deleting account…':'Delete account permanently'}</button>{accountDeleteError&&<div className="error-box">{accountDeleteError}</div>}<div className="field-help">Permanently deletes your sign-in, cloud data and usage records. Any Razorpay subscription is cancelled immediately before deletion.</div></div></div></>}
       </div>
       <footer className="footer"><span>© {new Date().getFullYear()} NutriTrack AI</span><span>Made for mindful everyday nutrition <HeartPulse size={13}/></span></footer>
     </main>
