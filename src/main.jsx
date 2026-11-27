@@ -83,10 +83,10 @@ function App(){
     let migrated = false;
     setCloudReady(false);
     setSyncStatus('loading');
-    const unsubscribe = subscribeCloudData(authUser.uid, async (cloud) => {
+    const unsubscribe = subscribeCloudData(authUser.uid, async (cloud, changed) => {
       if (!active) return;
       try {
-        if (!migrated && !cloud.hasCloudData) {
+        if (changed === 'initial' && !migrated && !cloud.hasCloudData) {
           migrated = true;
           const legacyProfile = read('nt_profile', null);
           const legacyMeals = read('nt_meals', null);
@@ -104,14 +104,18 @@ function App(){
           localStorage.removeItem('nt_setup_done');
         } else {
           migrated = true;
-          if (cloud.profile) setProfile(current => JSON.stringify(current) === JSON.stringify(cloud.profile) ? current : cloud.profile);
-          if (cloud.weights) setWeights(current => JSON.stringify(current) === JSON.stringify(cloud.weights) ? current : cloud.weights);
-          setMeals(current => {
-            const currentById = new Map(current.map((meal) => [String(meal.id), meal]));
-            const remoteById = new Map(cloud.meals.map((meal) => [String(meal.id), meal]));
-            if (currentById.size === remoteById.size && [...remoteById].every(([id, meal]) => JSON.stringify(currentById.get(id)) === JSON.stringify(meal))) return current;
-            return cloud.meals;
-          });
+          if (changed === 'initial' || changed === 'profile') {
+            if (cloud.profile) setProfile(current => JSON.stringify(current) === JSON.stringify(cloud.profile) ? current : cloud.profile);
+            if (cloud.weights) setWeights(current => JSON.stringify(current) === JSON.stringify(cloud.weights) ? current : cloud.weights);
+          }
+          if (changed === 'initial' || changed === 'meals') {
+            setMeals(current => {
+              const currentById = new Map(current.map((meal) => [String(meal.id), meal]));
+              const remoteById = new Map(cloud.meals.map((meal) => [String(meal.id), meal]));
+              if (currentById.size === remoteById.size && [...remoteById].every(([id, meal]) => JSON.stringify(currentById.get(id)) === JSON.stringify(meal))) return current;
+              return cloud.meals;
+            });
+          }
         }
         if (active) { setCloudReady(true); setSyncStatus('synced'); setAuthError(''); }
       } catch (error) {
