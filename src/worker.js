@@ -236,6 +236,34 @@ async function getOrCreatePlan(env, code) {
   const saved = await env.DB.prepare("SELECT razorpay_plan_id FROM razorpay_plans WHERE plan_code = ?").bind(code).first();
   return saved.razorpay_plan_id;
 }
+async function releaseAbandonedSubscription(env, userId, subscriptionId) {
+  const claim = await env.DB.prepare(
+    "SELECT provider_subscription_id FROM trial_claims WHERE user_id = ? AND provider = 'razorpay' AND provider_subscription_id = ? AND status = 'pending'"
+  ).bind(userId, subscriptionId).first();
+  if (!claim) return { released: false, reason: "not_pending" };
+
+  // Confirm the provider-side state before releasing the local lock. Never
+  // release an authenticated/active subscription just because Checkout closed.
+  const remote = await razorpayRequest(env, `/subscriptions/${encodeURIComponent(subscriptionId)}`);
+  const status = String(remote.status || "").toLowerCase();
+  const hasCustomer = Boolean(remote.customer_id);
+  const authAttempts = Number(remote.auth_attempts || 0);
+  const safeToRelease = !hasCustomer && authAttempts === 0
+    && (status === "created" || status === "expired" || status === "cancelled");
+  if (!safeToRelease) return { released: false, reason: "authorization_may_have_succeeded", status };
+
+  if (status === "created") {
+    await cancelRazorpaySubscription(env, subscriptionId);
+  }
+  await env.DB.batch([
+    env.DB.prepare("UPDATE trial_claims SET status = 'expired' WHERE user_id = ? AND provider_subscription_id = ? AND status = 'pending'")
+      .bind(userId, subscriptionId),
+    env.DB.prepare("UPDATE user_entitlements SET status = 'demo', razorpay_subscription_id = NULL, plan_code = NULL, updated_at = ? WHERE user_id = ? AND razorpay_subscription_id = ? AND status = 'demo'")
+      .bind(Date.now(), userId, subscriptionId),
+  ]);
+  return { released: true };
+}
+
 async function createSubscription(env, userId, code) {
   const access = await getAccess(env.DB, userId);
   if (access.status === "trialing" || access.status === "active") throw new Error("Your account already has premium access.");
@@ -361,7 +389,7 @@ export default {
     if (!url.pathname.startsWith("/api/")) return env.ASSETS.fetch(request);
 
     if (url.pathname === "/api/razorpay-webhook" && request.method === "POST") return handleRazorpayWebhook(request, env);
-    const allowedPaths = ["/api/meal-analysis", "/api/demo-analysis", "/api/ai-status", "/api/usage", "/api/access", "/api/create-subscription", "/api/cancel-subscription"];
+    const allowedPaths = ["/api/meal-analysis", "/api/demo-analysis", "/api/ai-status", "/api/usage", "/api/access", "/api/create-subscription", "/api/cancel-subscription", "/api/abandon-subscription"];
     if (request.method !== "POST" || !allowedPaths.includes(url.pathname)) {
       return json({ error: "Not found." }, 404);
     }
@@ -385,8 +413,19 @@ export default {
       return json({ error: "Please sign in again before using AI meal analysis." }, 401);
     }
 
-    if (url.pathname === "/api/create-subscription" || url.pathname === "/api/cancel-subscription") {
+    if (url.pathname === "/api/create-subscription" || url.pathname === "/api/cancel-subscription" || url.pathname === "/api/abandon-subscription") {
       let body; try { body = await request.json(); } catch { return json({ error: "Invalid request body." }, 400); }
+      if (url.pathname === "/api/abandon-subscription") {
+        const subscriptionId = typeof body.subscriptionId === "string" ? body.subscriptionId : "";
+        if (!/^sub_[A-Za-z0-9]+$/.test(subscriptionId)) return json({ error: "Invalid subscription reference." }, 400);
+        try {
+          const result = await releaseAbandonedSubscription(env, userId, subscriptionId);
+          return json({ ok: true, ...result });
+        } catch (error) {
+          console.error("Could not reconcile abandoned Razorpay subscription", { message: error.message });
+          return json({ error: "Could not safely release this checkout yet. Please try again shortly." }, 502);
+        }
+      }
       if (url.pathname === "/api/create-subscription") {
         const code = body.planCode;
         if (!Object.hasOwn(SUBSCRIPTION_PLANS, code)) return json({ error: "Choose a valid subscription plan." }, 400);
