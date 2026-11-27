@@ -392,7 +392,7 @@ export default {
     if (["/api/create-subscription", "/api/verify-subscription", "/api/cancel-subscription", "/api/abandon-subscription"].includes(url.pathname) && !razorpayConfigured(env)) missingConfig.push("RAZORPAY_API_KEY/RAZORPAY_SECRET");
     if (missingConfig.length) {
       const geminiPath = ["/api/meal-analysis", "/api/demo-analysis", "/api/ai-status"].includes(url.pathname);
-      const subscriptionPath = ["/api/create-subscription", "/api/cancel-subscription", "/api/abandon-subscription"].includes(url.pathname);
+      const subscriptionPath = ["/api/create-subscription", "/api/verify-subscription", "/api/cancel-subscription", "/api/abandon-subscription"].includes(url.pathname);
       const message = geminiPath ? "Gemini AI is not configured on this Preview deployment." : subscriptionPath ? "Razorpay subscription service is not configured on this Preview deployment." : "Account service is not configured on this Preview deployment.";
       return json({ error: message, missing: missingConfig }, 503);
     }
@@ -404,7 +404,7 @@ export default {
       return json({ error: "Please sign in again before using AI meal analysis." }, 401);
     }
 
-    if (url.pathname === "/api/create-subscription" || url.pathname === "/api/cancel-subscription" || url.pathname === "/api/abandon-subscription") {
+    if (url.pathname === "/api/create-subscription" || url.pathname === "/api/verify-subscription" || url.pathname === "/api/cancel-subscription" || url.pathname === "/api/abandon-subscription") {
       let body; try { body = await request.json(); } catch { return json({ error: "Invalid request body." }, 400); }
       if (url.pathname === "/api/verify-subscription") {
         const subscriptionId = typeof body.subscriptionId === "string" ? body.subscriptionId : "";
@@ -412,9 +412,9 @@ export default {
         const signature = typeof body.signature === "string" ? body.signature : "";
         if (!/^sub_[A-Za-z0-9]+$/.test(subscriptionId) || !/^pay_[A-Za-z0-9]+$/.test(paymentId) || !signature) return json({ error: "Invalid Razorpay Checkout response." }, 400);
         try {
-          const claim = await env.DB.prepare("SELECT user_id, ends_at, status FROM trial_claims WHERE user_id = ? AND provider_subscription_id = ? AND provider = 'razorpay'").bind(userId, subscriptionId).first();
+          const claim = await env.DB.prepare("SELECT user_id, provider_subscription_id, ends_at, status FROM trial_claims WHERE user_id = ? AND provider_subscription_id = ? AND provider = 'razorpay'").bind(userId, subscriptionId).first();
           if (!claim) return json({ error: "Subscription was not found for this account." }, 404);
-          if (!await verifySubscriptionCheckoutSignature(paymentId, subscriptionId, signature, razorpayCredentials(env).keySecret)) return json({ error: "Razorpay payment verification failed." }, 400);
+          if (!await verifySubscriptionCheckoutSignature(paymentId, claim.provider_subscription_id, signature, razorpayCredentials(env).keySecret)) return json({ error: "Razorpay payment verification failed." }, 400);
           if (claim.status === "trialing" || claim.status === "converted") return json({ ok: true, alreadyVerified: true });
           if (claim.status !== "pending") return json({ error: "This subscription is no longer pending." }, 409);
           const now = Date.now();
