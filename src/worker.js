@@ -380,7 +380,7 @@ export default {
     if (!url.pathname.startsWith("/api/")) return env.ASSETS.fetch(request);
 
     if (url.pathname === "/api/razorpay-webhook" && request.method === "POST") return handleRazorpayWebhook(request, env);
-    const allowedPaths = ["/api/meal-analysis", "/api/demo-analysis", "/api/ai-status", "/api/usage", "/api/access", "/api/create-subscription", "/api/verify-subscription", "/api/cancel-subscription", "/api/abandon-subscription"];
+    const allowedPaths = ["/api/meal-analysis", "/api/demo-analysis", "/api/ai-status", "/api/usage", "/api/access", "/api/create-subscription", "/api/verify-subscription", "/api/cancel-subscription", "/api/abandon-subscription", "/api/delete-account-data"];
     if (request.method !== "POST" || !allowedPaths.includes(url.pathname)) {
       return json({ error: "Not found." }, 404);
     }
@@ -389,7 +389,7 @@ export default {
     if (!env.FIREBASE_PROJECT_ID) missingConfig.push("FIREBASE_PROJECT_ID");
     if (["/api/meal-analysis", "/api/demo-analysis", "/api/ai-status"].includes(url.pathname) && !env.GEMINI_API_KEY) missingConfig.push("GEMINI_API_KEY");
     if (!env.DB) missingConfig.push("DB");
-    if (["/api/create-subscription", "/api/verify-subscription", "/api/cancel-subscription", "/api/abandon-subscription"].includes(url.pathname) && !razorpayConfigured(env)) missingConfig.push("RAZORPAY_API_KEY/RAZORPAY_SECRET");
+    if (["/api/create-subscription", "/api/verify-subscription", "/api/cancel-subscription", "/api/abandon-subscription", "/api/delete-account-data"].includes(url.pathname) && !razorpayConfigured(env)) missingConfig.push("RAZORPAY_API_KEY/RAZORPAY_SECRET");
     if (missingConfig.length) {
       const geminiPath = ["/api/meal-analysis", "/api/demo-analysis", "/api/ai-status"].includes(url.pathname);
       const subscriptionPath = ["/api/create-subscription", "/api/verify-subscription", "/api/cancel-subscription", "/api/abandon-subscription"].includes(url.pathname);
@@ -404,8 +404,41 @@ export default {
       return json({ error: "Please sign in again before using AI meal analysis." }, 401);
     }
 
-    if (url.pathname === "/api/create-subscription" || url.pathname === "/api/verify-subscription" || url.pathname === "/api/cancel-subscription" || url.pathname === "/api/abandon-subscription") {
+    if (url.pathname === "/api/create-subscription" || url.pathname === "/api/verify-subscription" || url.pathname === "/api/cancel-subscription" || url.pathname === "/api/abandon-subscription" || url.pathname === "/api/delete-account-data") {
       let body; try { body = await request.json(); } catch { return json({ error: "Invalid request body." }, 400); }
+      if (url.pathname === "/api/delete-account-data") {
+        try {
+          const entitlement = await env.DB.prepare(
+            "SELECT razorpay_subscription_id FROM user_entitlements WHERE user_id = ?"
+          ).bind(userId).first();
+          const subscriptionId = entitlement?.razorpay_subscription_id;
+          if (subscriptionId) {
+            const remote = await razorpayRequest(env, `/subscriptions/${encodeURIComponent(subscriptionId)}`);
+            const status = String(remote.status || "").toLowerCase();
+            if (!["cancelled", "completed", "expired"].includes(status)) {
+              await razorpayRequest(
+                env,
+                `/subscriptions/${encodeURIComponent(subscriptionId)}/cancel`,
+                "POST",
+                { cancel_at_cycle_end: 0 }
+              );
+            }
+          }
+          await env.DB.batch([
+            env.DB.prepare("DELETE FROM trial_claims WHERE user_id = ?").bind(userId),
+            env.DB.prepare("DELETE FROM payment_methods WHERE user_id = ?").bind(userId),
+            env.DB.prepare("DELETE FROM demo_usage WHERE user_id = ?").bind(userId),
+            env.DB.prepare("DELETE FROM ai_usage WHERE user_id = ?").bind(userId),
+            env.DB.prepare("DELETE FROM user_entitlements WHERE user_id = ?").bind(userId)
+          ]);
+          return json({ ok: true, subscriptionCancelled: Boolean(subscriptionId) });
+        } catch (error) {
+          console.error("Account data deletion failed", { userId, message: error.message });
+          return json({
+            error: "We couldn't safely finish account deletion. Your sign-in account has not been deleted; please retry or contact support."
+          }, 502);
+        }
+      }
       if (url.pathname === "/api/verify-subscription") {
         const subscriptionId = typeof body.subscriptionId === "string" ? body.subscriptionId : "";
         const paymentId = typeof body.paymentId === "string" ? body.paymentId : "";
