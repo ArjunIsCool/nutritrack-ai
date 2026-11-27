@@ -331,15 +331,11 @@ async function handleRazorpayWebhook(request, env) {
   // its webhook payload is not guaranteed to contain a payment/card entity.
   // Wait for payment.authorized, which carries the payment details used for the
   // one-trial-per-card check. Never cancel solely because this event lacks card_id.
-  if (event.event === "subscription.authenticated") {
-    console.info("Razorpay subscription authenticated; awaiting payment.authorized card details", { subscriptionId: subId });
-    return json({ ok: true, awaitingPaymentAuthorization: true });
-  }
-
-  if (event.event === "payment.authorized") {
-    // Some webhook payloads may omit nested payment fields. Fetch the canonical
-    // payment resource before deciding whether the card identifier is unavailable.
-    if ((!payment.card_id || !payment.method) && payment.id) {
+  if (event.event === "payment.authorized" || event.event === "subscription.authenticated") {
+    // Either webhook can carry the card identifier. In particular, Razorpay's
+    // subscription.authenticated entity can include method/card_id, while a
+    // payment.authorized entity may not include subscription_id at all.
+    if (event.event === "payment.authorized" && (!payment.card_id || !payment.method) && payment.id) {
       try {
         const fetchedPayment = await razorpayRequest(env, `/payments/${encodeURIComponent(payment.id)}`);
         payment = { ...payment, ...fetchedPayment };
@@ -349,10 +345,23 @@ async function handleRazorpayWebhook(request, env) {
       }
     }
 
-    const method = payment.method || claim.payment_method;
-    const cardId = payment.card_id || payment.card?.id || claim.card_id;
+    let method = payment.method || claim.method || claim.payment_method;
+    let cardId = payment.card_id || payment.card?.id || claim.card_id || claim.card?.id;
 
-    if (method !== "card") {
+    // If the authenticated webhook omits card details, retrieve the canonical
+    // subscription resource rather than waiting for an unrelated payment event.
+    if (!cardId && event.event === "subscription.authenticated") {
+      try {
+        const remoteSubscription = await razorpayRequest(env, `/subscriptions/${encodeURIComponent(subId)}`);
+        method = method || remoteSubscription.method || remoteSubscription.payment_method;
+        cardId = remoteSubscription.card_id || remoteSubscription.card?.id;
+      } catch (error) {
+        console.error("Could not fetch Razorpay authenticated subscription", { subscriptionId: subId, message: error.message });
+        return json({ error: "Could not verify the authenticated payment method yet." }, 503);
+      }
+    }
+
+    if (method && method !== "card") {
       // The product currently offers card authorization only. Reject an
       // explicitly non-card authorization, but do not treat missing data as one.
       await env.DB.batch([
