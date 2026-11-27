@@ -187,8 +187,10 @@ function App(){
     setAccountDeleteBusy(true);
     setAccountDeleteError('');
     setCloudReady(false);
+    let deletionStarted = false;
     try {
       await reauthenticateWithPopup(authUser, googleProvider);
+      deletionStarted = true;
       const token = await authUser.getIdToken(true);
       await deleteCloudData(authUser.uid);
       const response = await fetch('/api/delete-account-data', {
@@ -207,6 +209,7 @@ function App(){
       setAiUsage(null); setAccess(null); setDemoUsage(null);
       setNotice('Your NutriTrack account has been permanently deleted.');
     } catch (error) {
+      if (!deletionStarted) setCloudReady(true);
       const message = error.code === 'auth/popup-closed-by-user'
         ? 'Google re-authentication was cancelled. Your account was not deleted.'
         : error.code === 'auth/requires-recent-login'
