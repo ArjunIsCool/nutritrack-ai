@@ -92,7 +92,7 @@ Phase 4 turns NutriTrack AI from a calorie/macro logger into a country-aware nut
 ## Progress notes
 
 - Country selection is available during first-run setup and editable under Goals; profiles are migrated with an ISO alpha-2 country code, defaulting to IN for existing records.
-- The Worker now receives country context for both demo and premium text analysis.
+- The Worker now receives country context for both demo and premium text analysis. US barcode lookup optionally prefers USDA FoodData Central exact-GTIN records when `FDC_API_KEY` is configured as a Worker Secret; otherwise it falls back to Open Food Facts. No API key is exposed to the browser.
 - Version 1 of the nutrient schema covers 40 fields across energy, macros, fats, fibre/sugars, minerals, vitamins, water, caffeine, and alcohol.
 - AI-returned unknown values remain null and are labelled unavailable; numeric estimates carry units, serving basis, and source/status metadata.
 - Saved meals preserve the full analysis snapshot, per-item nutrient snapshots, assumptions, clarification, country, model, and analysis timestamp. Meal rows open a read-only detail view.
