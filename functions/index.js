@@ -9,7 +9,7 @@ const workerInternalSecret = defineSecret('WORKER_INTERNAL_SECRET');
 const workerUrl = defineString('NUTRITRACK_WORKER_URL');
 
 async function updateWorkerRevocation(baseUrl, uid, revokedAfter, secret) {
-  const endpoint = `${baseUrl.replace(/\\/$/, '')}/api/internal/session-revoked`;
+  const endpoint = `${String(baseUrl || '').trim().replace(/\\/+$/, '')}/api/internal/session-revoked`;
   let lastFailure = 'Worker security update failed.';
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     try {
