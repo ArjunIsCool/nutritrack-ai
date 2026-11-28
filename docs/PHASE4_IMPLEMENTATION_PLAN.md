@@ -77,16 +77,17 @@ Phase 4 turns NutriTrack AI from a calorie/macro logger into a country-aware nut
 - Add schema migration/backward-compatibility handling for existing meals and profiles.
 - Add automated tests for schema normalization, limits, parsing, source matching, and aggregation. The repository currently has no test script; introduce a proportionate test setup.
 - Never fabricate unavailable micronutrient values or reference targets.
-- Keep Preview and Production data isolated before any production rollout; the current Wrangler configuration shares a D1 database.
+- Keep Preview and Production data isolated before any production rollout. The Wrangler configuration still points Preview and Production at the same D1 database; a separate Preview D1 database must be provisioned in Cloudflare and its ID supplied before this guardrail is satisfied.
 
 ## Delivery sequence
 
 1. [x] Inspect existing data contracts and add the country-aware profile + versioned nutrition schema foundation.
 2. [x] Implement comprehensive text-analysis output and persist full analysis snapshots; add meal detail history.
 3. [x] Implement photo attachments (maximum five), optional caption, client-side compression, server-side validation, and Gemini image analysis. Original images are intentionally not persisted; only attachment metadata is saved.
-4. Implement barcode decoding and source adapters with provenance and ambiguity handling.
-5. Implement nutrient dashboards/trends with coverage-aware aggregation and reference targets.
-6. Complete onboarding, migration/backups, regression tests, documentation, and staged preview validation.
+4. [x] Implement local UPC/EAN/GTIN checksum validation and authenticated Open Food Facts v3 lookup; save product ID, country market, source URL, retrieval timestamp, match label, per-100 g basis, and normalized nutrient provenance. Open Food Facts is a secondary community-contributed source; GS1/manufacturer adapters and camera-based scanning remain future integrations.
+5. [x] Implement daily/weekly/monthly coverage-aware nutrient trend aggregation for sodium, added sugars, fibre, iron, B12 and vitamin C. Known-value subtotals and meal coverage are shown separately; unknown values are excluded rather than treated as zero. Added sugar does not receive a reference target because available standards do not directly equate it with free sugars.
+6. [x] Add sourced reference context: WHO adult sodium upper limit, and ICMR-NIN 2020 adult fibre/iron/B12/vitamin C references for supported Indian adult profiles. Other unsupported jurisdiction/profile combinations deliberately show no target.
+7. Complete onboarding, migration/backups, regression tests, documentation, and staged preview validation. Basic source/provenance explanations and sex context are now included in setup/profile editing; final signed-in end-to-end checks remain.
 
 ## Progress notes
 
@@ -96,7 +97,7 @@ Phase 4 turns NutriTrack AI from a calorie/macro logger into a country-aware nut
 - AI-returned unknown values remain null and are labelled unavailable; numeric estimates carry units, serving basis, and source/status metadata.
 - Saved meals preserve the full analysis snapshot, per-item nutrient snapshots, assumptions, clarification, country, model, and analysis timestamp. Meal rows open a read-only detail view.
 - Photo input supports up to five JPEG/PNG/WebP attachments with browser-side resize/compression, optional caption, previews, and server-side count/MIME/base64/per-file/aggregate-size validation. Original images are not persisted; saved meals retain only attachment metadata.
-- Automated Node tests cover country options, nutrient normalization, provenance, versioning, and photo validation/limits. The expanded Node test suite (11 tests), Vite production build, and Wrangler Worker dry-run bundle validation all passed in GitHub Actions run #46. The dependency audit reports four high-severity transitive `@grpc/grpc-js` advisories through Firebase Firestore; the forced npm fix would downgrade Firebase to 9.14.0, so this remains a release-triage item. Latest Cloudflare Preview deployment and signed-in end-to-end behavior still need confirmation. The Vite build reports a non-blocking large JavaScript chunk warning.
+- Automated Node tests cover country options, nutrient normalization, provenance, versioning, and photo validation/limits. The expanded Node test suite (21 tests), Vite production build, and Wrangler Worker dry-run bundle validation all passed in GitHub Actions run #46. The dependency audit reports four high-severity transitive `@grpc/grpc-js` advisories through Firebase Firestore; the forced npm fix would downgrade Firebase to 9.14.0, so this remains a release-triage item. The latest branch has a successful Cloudflare Preview deployment; signed-in end-to-end behavior still needs user validation. The Vite build reports a non-blocking large JavaScript chunk warning.
 
 ## Definition of done
 
