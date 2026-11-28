@@ -4,8 +4,8 @@
 
 The app uses a Firebase 2nd-generation callable Cloud Function with the Firebase Admin SDK. The Admin SDK runs only in Google's server environment; no service-account private key is stored in the browser or repository.
 
-1. The user confirms and reauthenticates with Google.
-2. The callable function requires an authentication time within the last five minutes.
+1. The signed-in user confirms the action; no second Google popup is shown.
+2. The callable function verifies the Firebase-authenticated caller and uses that caller's UID only.
 3. Firebase Admin revokes the user's refresh tokens.
 4. A private Firestore session document records the revocation cutoff; Firestore rules reject tokens authenticated before that cutoff.
 5. The function sends the same cutoff to the Cloudflare Worker through a shared secret. The Worker stores it in D1 and rejects older tokens on every authenticated API route.
@@ -17,7 +17,7 @@ Firebase ID tokens may otherwise remain valid for up to one hour after refresh-t
 
 - Firebase project `nutritrack-ai-6337e`, Google sign-in and Firestore enabled.
 - Link a billing account and upgrade Firebase to the **Blaze** plan before deploying Cloud Functions. Set a small Google Cloud budget alert. Cloud Functions, Secret Manager, build and network usage can incur charges.
-- Install Node.js 20 and Firebase CLI.
+- Install Node.js 22 and Firebase CLI.
 
 ## Setup
 
@@ -80,11 +80,10 @@ Use a dedicated test account, not your only production account.
 
 1. Sign in to the same account on two browsers/devices.
 2. On device A, open Settings → Privacy & security → **Sign out on all devices**.
-3. Complete Google's reauthentication popup.
-4. Device A signs out.
-5. On device B, try to sync or make an authenticated API request. It should be denied and require a fresh sign-in.
-6. Sign in again on device B; access should work normally.
-7. Repeat with device B offline, then reconnect it. It should be required to reauthenticate before cloud access resumes.
+3. Device A should sign out immediately after the server confirms revocation.
+4. On device B, try to sync or make an authenticated API request. It should be denied and require a fresh sign-in.
+5. Sign in again on device B; access should work normally.
+6. Repeat with device B offline, then reconnect it. It should be required to reauthenticate before cloud access resumes.
 
 ## Recovery note
 
