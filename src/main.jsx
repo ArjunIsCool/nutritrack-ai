@@ -431,7 +431,7 @@ function App(){
       const response = await fetch('/api/barcode-lookup', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-        body: JSON.stringify({ barcode: barcodeInput })
+        body: JSON.stringify({ barcode: barcodeInput, countryCode: profile.countryCode || DEFAULT_COUNTRY_CODE })
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok && (data?.code === 'SESSION_REVOKED' || response.status === 401)) {
