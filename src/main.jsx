@@ -450,13 +450,15 @@ function App(){
       video.srcObject = stream;
       await video.play();
       const scanFrame = async () => {
-        if (cancelled || !video || video.readyState < 2) return;
+        if (cancelled || !video) return;
+        if (video.readyState < 2) { animationFrame = requestAnimationFrame(scanFrame); return; }
         try {
           const detected = await detector.detect(video);
           const match = detected.find(item => normalizeRetailBarcode(item.rawValue));
           if (match) {
             setBarcodeInput(normalizeRetailBarcode(match.rawValue));
-            setBarcodeError('Barcode captured. Confirm the digits, then select Look up.');
+            setBarcodeError('');
+            setNotice('Barcode captured. Confirm the digits, then select Look up.');
             setBarcodeCameraActive(false);
             return;
           }
