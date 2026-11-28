@@ -62,11 +62,16 @@ export const revokeMySessions = onCall({
     return { ok: true };
   } catch (error) {
     console.error('Session revocation failed', { uid, stage, message: error.message });
+    // Expose the failed stage, not secrets or user identifiers, to make a
+    // partially completed revocation diagnosable from the browser.
     throw new HttpsError(
       'unavailable',
       stage === 'worker'
-        ? 'Firebase sessions were revoked, but the Worker security cutoff could not be confirmed. Your current device will still sign out. Please retry the all-device action after checking the Worker configuration.'
-        : 'Could not complete session revocation. Please retry.',
+        ? 'Firebase and Firestore revocation succeeded, but the Worker cutoff update failed. Check Cloud Function logs for the HTTP status and target URL.'
+        : stage === 'firestore'
+          ? 'Firebase refresh tokens were revoked, but writing the Firestore session cutoff failed. Check the Cloud Function service account permissions.'
+          : 'Firebase session revocation failed. Check the Cloud Function logs.',
+      { stage },
     );
   }
 });
