@@ -93,3 +93,88 @@ export function normalizeOpenFoodFactsProduct(product, barcode, retrievedAt = ne
     warning: "Community-contributed catalogue data. Check the package label; missing values are unknown, not zero.",
   };
 }
+
+
+const USDA_NUTRIENT_MAP = {
+  "208": ["energy_kcal", "kcal"], "203": ["protein_g", "g"],
+  "205": ["carbohydrate_g", "g"], "204": ["total_fat_g", "g"],
+  "606": ["saturated_fat_g", "g"], "605": ["trans_fat_g", "g"],
+  "645": ["monounsaturated_fat_g", "g"], "646": ["polyunsaturated_fat_g", "g"],
+  "601": ["cholesterol_mg", "mg"], "291": ["fiber_g", "g"],
+  "269": ["total_sugars_g", "g"], "539": ["added_sugars_g", "g"],
+  "307": ["sodium_mg", "mg"], "306": ["potassium_mg", "mg"],
+  "301": ["calcium_mg", "mg"], "303": ["iron_mg", "mg"],
+  "304": ["magnesium_mg", "mg"], "309": ["zinc_mg", "mg"],
+  "305": ["phosphorus_mg", "mg"], "317": ["selenium_ug", "µg"],
+  "312": ["copper_mg", "mg"], "315": ["manganese_mg", "mg"],
+  "373": ["iodine_ug", "µg"], "421": ["choline_mg", "mg"],
+  "320": ["vitamin_a_ug_rae", "µg"], "401": ["vitamin_c_mg", "mg"],
+  "328": ["vitamin_d_ug", "µg"], "323": ["vitamin_e_mg", "mg"],
+  "430": ["vitamin_k_ug", "µg"], "404": ["vitamin_b1_mg", "mg"],
+  "405": ["vitamin_b2_mg", "mg"], "406": ["vitamin_b3_mg", "mg"],
+  "410": ["vitamin_b5_mg", "mg"], "415": ["vitamin_b6_mg", "mg"],
+  "416": ["vitamin_b7_ug", "µg"], "417": ["vitamin_b9_ug_dfe", "µg"],
+  "418": ["vitamin_b12_ug", "µg"], "255": ["water_g", "g"],
+  "262": ["caffeine_mg", "mg"], "221": ["alcohol_g", "g"],
+};
+
+function convertFdcAmount(amount, sourceUnit, targetUnit) {
+  const value = Number(amount);
+  if (!Number.isFinite(value) || value < 0) return null;
+  const source = String(sourceUnit || "").toLowerCase().replace("μ", "µ").replace("ug", "µg");
+  if (targetUnit === "kcal") {
+    if (source === "kcal" || source === "kcal/100g") return value;
+    if (source === "kj" || source === "kj/100g") return value / 4.184;
+    return null;
+  }
+  if (source === targetUnit) return value;
+  if (targetUnit === "g") return source === "mg" ? value / 1000 : source === "µg" ? value / 1_000_000 : null;
+  if (targetUnit === "mg") return source === "g" ? value * 1000 : source === "µg" ? value / 1000 : null;
+  if (targetUnit === "µg") return source === "g" ? value * 1_000_000 : source === "mg" ? value * 1000 : null;
+  return null;
+}
+
+export function normalizeUsdaFood(food, barcode, retrievedAt = new Date().toISOString()) {
+  if (!food || typeof food !== "object" || !food.fdcId || !food.gtinUpc) return null;
+  const canonical = value => String(value || "").replace(/\\D/g, "").replace(/^0+/, "");
+  if (canonical(food.gtinUpc) !== canonical(barcode)) return null;
+  const values = {
+    energy_kcal: null, protein_g: null, carbohydrate_g: null, total_fat_g: null,
+    saturated_fat_g: null, trans_fat_g: null, monounsaturated_fat_g: null,
+    polyunsaturated_fat_g: null, cholesterol_mg: null, fiber_g: null,
+    total_sugars_g: null, added_sugars_g: null, sodium_mg: null, potassium_mg: null,
+    calcium_mg: null, iron_mg: null, magnesium_mg: null, zinc_mg: null,
+    phosphorus_mg: null, selenium_ug: null, copper_mg: null, manganese_mg: null,
+    iodine_ug: null, choline_mg: null, vitamin_a_ug_rae: null, vitamin_c_mg: null,
+    vitamin_d_ug: null, vitamin_e_mg: null, vitamin_k_ug: null, vitamin_b1_mg: null,
+    vitamin_b2_mg: null, vitamin_b3_mg: null, vitamin_b5_mg: null, vitamin_b6_mg: null,
+    vitamin_b7_ug: null, vitamin_b9_ug_dfe: null, vitamin_b12_ug: null,
+    water_g: null, caffeine_mg: null, alcohol_g: null,
+  };
+  for (const entry of Array.isArray(food.foodNutrients) ? food.foodNutrients : []) {
+    const nutrient = entry?.nutrient || {};
+    const mapped = USDA_NUTRIENT_MAP[String(nutrient.number || "")];
+    if (!mapped) continue;
+    const [key, unit] = mapped;
+    if (values[key] !== null) continue;
+    values[key] = convertFdcAmount(entry.amount, nutrient.unitName, unit);
+  }
+  const name = String(food.description || "").trim();
+  if (!name) return null;
+  return {
+    barcode,
+    name,
+    brand: String(food.brandOwner || food.brandName || "").slice(0, 180),
+    quantity: food.servingSize && food.servingSizeUnit ? String(food.servingSize) + " " + String(food.servingSizeUnit) + " serving" : "",
+    categories: String(food.brandedFoodCategory || "").slice(0, 300),
+    market: ["US"],
+    imageUrl: null,
+    nutrients: values,
+    basis: "per-100g",
+    source: "USDA FoodData Central (branded label data)",
+    sourceUrl: "https://fdc.nal.usda.gov/food/" + encodeURIComponent(food.fdcId) + "/nutrients",
+    retrievedAt,
+    confidence: "exact-gtin-match",
+    warning: "Branded nutrient data are supplied by data providers and may reflect package labels. Check the current physical package.",
+  };
+}
