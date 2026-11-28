@@ -24,6 +24,36 @@ const getMealNutrientEntry = (meal, key, unit) => {
   const value = legacyField ? numOrNull(meal?.[legacyField]) : null;
   return value === null ? null : { value, unit, status: 'estimated', source: 'legacy-meal-record' };
 };
+
+async function compressImageFile(file) {
+  if (typeof createImageBitmap !== 'function') throw new Error('Image processing is not supported in this browser.');
+  const bitmap = await createImageBitmap(file);
+  const maxDimension = 1600;
+  const scale = Math.min(1, maxDimension / Math.max(bitmap.width, bitmap.height));
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+  canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+  const context = canvas.getContext('2d');
+  if (!context) { bitmap.close?.(); throw new Error('Could not prepare this image.'); }
+  context.fillStyle = '#fff';
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  bitmap.close?.();
+
+  const toBlob = quality => new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', quality));
+  let blob = await toBlob(0.82);
+  if (!blob) throw new Error('Could not compress one of your photos.');
+  if (blob.size > 1_500_000) blob = await toBlob(0.68);
+  if (!blob || blob.size > 1_500_000) throw new Error('A photo is still too large after compression. Please choose a smaller image.');
+
+  const data = await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).split(',')[1] || '');
+    reader.onerror = () => reject(new Error('Could not read one of your photos.'));
+    reader.readAsDataURL(blob);
+  });
+  return { mimeType: 'image/jpeg', data, compressedSize: blob.size };
+}
 const calcTargets = p => {
   const bmr = 10*p.weight + 6.25*p.height - 5*p.age + 5;
   const factors = { sedentary:1.2, light:1.375, moderate:1.55, high:1.725 };
@@ -51,6 +81,8 @@ function App(){
   const [error,setError] = useState('');
   const [notice,setNotice] = useState('');
   const [draft,setDraft] = useState(null);
+  const [attachments,setAttachments] = useState([]);
+  const attachmentUrlsRef = useRef(new Set());
   const [selectedMealId,setSelectedMealId] = useState(null);
   const [showSetup,setShowSetup] = useState(false);
   const [mobileNav,setMobileNav] = useState(false);
@@ -203,6 +235,7 @@ function App(){
 
   useEffect(()=>{ if('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(()=>{}); },[]);
   useEffect(()=>{ if(notice){const t=setTimeout(()=>setNotice(''),3200);return()=>clearTimeout(t);} },[notice]);
+  useEffect(() => () => { attachmentUrlsRef.current.forEach(url => URL.revokeObjectURL(url)); attachmentUrlsRef.current.clear(); }, []);
 
   const handleGoogleSignIn = async () => {
     if (!firebaseConfigured || !auth) {
@@ -376,15 +409,57 @@ function App(){
     } catch (error) { setBillingError(error.message || 'Could not start checkout.'); }
     finally { setCheckoutBusy(false); }
   };
+  const handleAttachmentSelection = event => {
+    const incoming = Array.from(event.target.files || []);
+    event.target.value = '';
+    if (!incoming.length) return;
+    if (attachments.length + incoming.length > 5) {
+      setError('You can attach up to five photos per analysis.');
+      return;
+    }
+    const unsupported = incoming.find(file => !['image/jpeg', 'image/png', 'image/webp'].includes(file.type));
+    if (unsupported) {
+      setError('Use JPEG, PNG or WebP photos. Other formats are not supported yet.');
+      return;
+    }
+    const oversized = incoming.find(file => file.size > 15 * 1024 * 1024);
+    if (oversized) {
+      setError('Each original photo must be 15 MB or smaller.');
+      return;
+    }
+    const next = incoming.map(file => {
+      const previewUrl = URL.createObjectURL(file);
+      attachmentUrlsRef.current.add(previewUrl);
+      return { file, previewUrl };
+    });
+    setAttachments(current => [...current, ...next]);
+    setError('');
+  };
+  const removeAttachment = previewUrl => {
+    URL.revokeObjectURL(previewUrl);
+    attachmentUrlsRef.current.delete(previewUrl);
+    setAttachments(current => current.filter(item => item.previewUrl !== previewUrl));
+  };
+  const clearAttachments = () => {
+    attachments.forEach(item => {
+      URL.revokeObjectURL(item.previewUrl);
+      attachmentUrlsRef.current.delete(item.previewUrl);
+    });
+    setAttachments([]);
+  };
   const analyzeMeal = async () => {
-    if(!prompt.trim()) return;
+    if(!prompt.trim() && attachments.length===0) return;
     if(!authUser || !cloudReady){setError('Your account is not connected to cloud sync. Please sign in again.');return;}
     setBusy(true);setError('');setDraft(null);
     try{
       const token=await authUser.getIdToken();
       const demoMode = access?.status !== 'trialing' && access?.status !== 'active';
       const endpoint = demoMode ? '/api/demo-analysis' : '/api/meal-analysis';
-      const res=await fetch(endpoint,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${token}`},body:JSON.stringify({prompt,category,model,countryCode:profile.countryCode||DEFAULT_COUNTRY_CODE})});
+      const preparedImages = await Promise.all(attachments.map(item => compressImageFile(item.file)));
+      const totalImageBytes = preparedImages.reduce((total, image) => total + image.compressedSize, 0);
+      if (totalImageBytes > 5 * 1024 * 1024) throw new Error('The five photos together must be 5 MB or smaller after compression. Remove a photo or choose smaller images.');
+      const imageAttachments = preparedImages.map(({ mimeType, data }) => ({ mimeType, data }));
+      const res=await fetch(endpoint,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${token}`},body:JSON.stringify({prompt,category,model,countryCode:profile.countryCode||DEFAULT_COUNTRY_CODE,imageAttachments})});
       const data=await res.json();
       if (data?.usage) setAiUsage(data.usage);
       if (data?.demoUsage) setDemoUsage(data.demoUsage);
@@ -399,7 +474,7 @@ function App(){
         throw new Error((data?.error||`Meal analysis failed (${res.status})`) + retry);
       }
       const parsed=JSON.parse((data.text||'').replace(/^\x60\x60\x60json\s*/,'').replace(/\x60\x60\x60$/,''));
-      const legacy = parsed.totals || {}; const nutrientValues = { ...(legacy.nutrients || {}), energy_kcal: legacy.nutrients?.energy_kcal ?? legacy.calories, protein_g: legacy.nutrients?.protein_g ?? legacy.protein, carbohydrate_g: legacy.nutrients?.carbohydrate_g ?? legacy.carbs, total_fat_g: legacy.nutrients?.total_fat_g ?? legacy.fat, fiber_g: legacy.nutrients?.fiber_g ?? legacy.fiber, total_sugars_g: legacy.nutrients?.total_sugars_g ?? legacy.sugar }; const nutrition = createNutritionSnapshot(nutrientValues, { status: 'estimated', source: 'gemini', basis: 'whole-meal' }); const items = (parsed.items || []).map(item => { const values = item.nutrients || {}; return { ...item, nutrition: createNutritionSnapshot({ ...values, energy_kcal: values.energy_kcal ?? item.calories, protein_g: values.protein_g ?? item.protein, carbohydrate_g: values.carbohydrate_g ?? item.carbs, total_fat_g: values.total_fat_g ?? item.fat, fiber_g: values.fiber_g ?? item.fiber, total_sugars_g: values.total_sugars_g ?? item.sugar }, { status: 'estimated', source: 'gemini', basis: 'item-portion' }) }; }); setDraft({...parsed,items,nutrition,category,rawPrompt:prompt,countryCode:profile.countryCode||DEFAULT_COUNTRY_CODE,date:today(),time:new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',hour12:false})});
+      const legacy = parsed.totals || {}; const nutrientValues = { ...(legacy.nutrients || {}), energy_kcal: legacy.nutrients?.energy_kcal ?? legacy.calories, protein_g: legacy.nutrients?.protein_g ?? legacy.protein, carbohydrate_g: legacy.nutrients?.carbohydrate_g ?? legacy.carbs, total_fat_g: legacy.nutrients?.total_fat_g ?? legacy.fat, fiber_g: legacy.nutrients?.fiber_g ?? legacy.fiber, total_sugars_g: legacy.nutrients?.total_sugars_g ?? legacy.sugar }; const nutrition = createNutritionSnapshot(nutrientValues, { status: 'estimated', source: 'gemini', basis: 'whole-meal' }); const items = (parsed.items || []).map(item => { const values = item.nutrients || {}; return { ...item, nutrition: createNutritionSnapshot({ ...values, energy_kcal: values.energy_kcal ?? item.calories, protein_g: values.protein_g ?? item.protein, carbohydrate_g: values.carbohydrate_g ?? item.carbs, total_fat_g: values.total_fat_g ?? item.fat, fiber_g: values.fiber_g ?? item.fiber, total_sugars_g: values.total_sugars_g ?? item.sugar }, { status: 'estimated', source: 'gemini', basis: 'item-portion' }) }; }); setDraft({...parsed,items,nutrition,category,rawPrompt:prompt,attachments:attachments.map(({file})=>({name:file.name,mimeType:file.type,originalSize:file.size})),countryCode:profile.countryCode||DEFAULT_COUNTRY_CODE,date:today(),time:new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',hour12:false})});
     }catch(e){setError(e.message||'Could not analyse this meal. Please check your sign-in and connection.');}
     finally{setBusy(false);}
   };
@@ -409,7 +484,7 @@ function App(){
       return;
     }
     const t = draft.totals || {};
-    const meal = {id:crypto.randomUUID?.()||String(Date.now()),date:draft.date||today(),time:draft.time||'12:00',category:draft.category||'Meal',name:draft.meal_name||'Meal',countryCode:draft.countryCode||profile.countryCode||DEFAULT_COUNTRY_CODE,items:draft.items||[],nutrition:draft.nutrition||createNutritionSnapshot({energy_kcal:t.calories,protein_g:t.protein,carbohydrate_g:t.carbs,total_fat_g:t.fat,fiber_g:t.fiber,total_sugars_g:t.sugar},{status:'estimated',source:'gemini',basis:'whole-meal'}),analysisSnapshot:{schemaVersion:1,mealName:draft.meal_name||'Meal',category:draft.category||'Meal',countryCode:draft.countryCode||profile.countryCode||DEFAULT_COUNTRY_CODE,rawPrompt:draft.rawPrompt||'',items:draft.items||[],totals:t,assumptions:draft.assumptions||[],needsClarification:Boolean(draft.needs_clarification),clarifyingQuestion:draft.clarifying_question||'',assessment:draft.assessment||'',quality:draft.quality||'Moderate',model,source:'gemini',analyzedAt:new Date().toISOString()},calories:numOrNull(t.calories),protein:numOrNull(t.protein),carbs:numOrNull(t.carbs),fat:numOrNull(t.fat),fiber:numOrNull(t.fiber),sugar:numOrNull(t.sugar),assessment:draft.assessment||'',quality:draft.quality||'Moderate',source:'gemini'};
+    const meal = {id:crypto.randomUUID?.()||String(Date.now()),date:draft.date||today(),time:draft.time||'12:00',category:draft.category||'Meal',name:draft.meal_name||'Meal',countryCode:draft.countryCode||profile.countryCode||DEFAULT_COUNTRY_CODE,items:draft.items||[],nutrition:draft.nutrition||createNutritionSnapshot({energy_kcal:t.calories,protein_g:t.protein,carbohydrate_g:t.carbs,total_fat_g:t.fat,fiber_g:t.fiber,total_sugars_g:t.sugar},{status:'estimated',source:'gemini',basis:'whole-meal'}),analysisSnapshot:{schemaVersion:1,mealName:draft.meal_name||'Meal',category:draft.category||'Meal',countryCode:draft.countryCode||profile.countryCode||DEFAULT_COUNTRY_CODE,rawPrompt:draft.rawPrompt||'',attachments:draft.attachments||[],items:draft.items||[],totals:t,assumptions:draft.assumptions||[],needsClarification:Boolean(draft.needs_clarification),clarifyingQuestion:draft.clarifying_question||'',assessment:draft.assessment||'',quality:draft.quality||'Moderate',model,source:'gemini',analyzedAt:new Date().toISOString()},calories:numOrNull(t.calories),protein:numOrNull(t.protein),carbs:numOrNull(t.carbs),fat:numOrNull(t.fat),fiber:numOrNull(t.fiber),sugar:numOrNull(t.sugar),assessment:draft.assessment||'',quality:draft.quality||'Moderate',source:'gemini'};
     setBusy(true);
     setError('');
     try {
@@ -418,6 +493,7 @@ function App(){
       setMeals(prev => [meal, ...prev]);
       setDraft(null);
       setPrompt('');
+      clearAttachments();
       setPage('Dashboard');
       setNotice('Meal saved to your cloud account.');
     } catch (error) {
