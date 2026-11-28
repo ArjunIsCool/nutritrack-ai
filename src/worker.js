@@ -496,7 +496,7 @@ export default {
           console.warn("USDA barcode lookup unavailable; falling back to Open Food Facts", { message: error?.message || "unknown" });
         }
       }
-        const upstream = await fetch("https://world.openfoodfacts.org/api/v3/product/" + encodeURIComponent(barcode) + "?cc=" + countryCode + "&fields=" + fields, {
+        const upstream = await fetch("https://world.openfoodfacts.org/api/v3/product/" + encodeURIComponent(barcode) + "?cc=" + countryCode.toLowerCase() + "&fields=" + fields, {
           headers: { "accept": "application/json", "user-agent": "NutriTrackAI/1.0 (https://github.com/ArjunIsCool/nutritrack-ai)" },
           signal: AbortSignal.timeout(9000)
         });
