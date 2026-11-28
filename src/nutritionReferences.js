@@ -40,7 +40,7 @@ export function getNutritionReference(nutrientKey, profile = {}) {
     }
   }
   if (country !== "IN" || !Number.isFinite(age) || age < 18 || age > 60 || !ICMR_INDIA_ADULT[sex]) return null;
-  const activity = profile.activity === "high" ? "heavy" : profile.activity === "moderate" ? "moderate" : "sedentary";
+  const activity = ["sedentary", "moderate", "heavy"].includes(profile.workCategory) ? profile.workCategory : "sedentary";
   const values = ICMR_INDIA_ADULT[sex];
   const value = nutrientKey === "fiber_g" ? values.fiber_g[activity] : values[nutrientKey];
   if (!Number.isFinite(value)) return null;
