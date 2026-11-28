@@ -236,6 +236,7 @@ function App(){
   useEffect(()=>{ if('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(()=>{}); },[]);
   useEffect(()=>{ if(notice){const t=setTimeout(()=>setNotice(''),3200);return()=>clearTimeout(t);} },[notice]);
   useEffect(() => () => { attachmentUrlsRef.current.forEach(url => URL.revokeObjectURL(url)); attachmentUrlsRef.current.clear(); }, []);
+  useEffect(() => { attachments.forEach(item => { URL.revokeObjectURL(item.previewUrl); attachmentUrlsRef.current.delete(item.previewUrl); }); setAttachments([]); }, [authUser?.uid]);
 
   const handleGoogleSignIn = async () => {
     if (!firebaseConfigured || !auth) {
@@ -427,6 +428,11 @@ function App(){
       setError('Each original photo must be 15 MB or smaller.');
       return;
     }
+    const combinedOriginalSize = [...attachments.map(item => item.file.size), ...incoming.map(file => file.size)].reduce((total, size) => total + size, 0);
+    if (combinedOriginalSize > 30 * 1024 * 1024) {
+      setError('The selected original photos must total 30 MB or less.');
+      return;
+    }
     const next = incoming.map(file => {
       const previewUrl = URL.createObjectURL(file);
       attachmentUrlsRef.current.add(previewUrl);
@@ -455,7 +461,8 @@ function App(){
       const token=await authUser.getIdToken();
       const demoMode = access?.status !== 'trialing' && access?.status !== 'active';
       const endpoint = demoMode ? '/api/demo-analysis' : '/api/meal-analysis';
-      const preparedImages = await Promise.all(attachments.map(item => compressImageFile(item.file)));
+      const preparedImages = [];
+      for (const item of attachments) preparedImages.push(await compressImageFile(item.file));
       const totalImageBytes = preparedImages.reduce((total, image) => total + image.compressedSize, 0);
       if (totalImageBytes > 5 * 1024 * 1024) throw new Error('The five photos together must be 5 MB or smaller after compression. Remove a photo or choose smaller images.');
       const imageAttachments = preparedImages.map(({ mimeType, data }) => ({ mimeType, data }));
