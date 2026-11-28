@@ -356,7 +356,7 @@ function App(){
   };
   const analyzeMeal = async () => {
     if(!prompt.trim()) return;
-    if(!authUser){setError('Sign in to use AI meal analysis.');return;}
+    if(!authUser || !cloudReady){setError('Your account is not connected to cloud sync. Please sign in again.');return;}
     setBusy(true);setError('');setDraft(null);
     try{
       const token=await authUser.getIdToken();
@@ -366,6 +366,12 @@ function App(){
       const data=await res.json();
       if (data?.usage) setAiUsage(data.usage);
       if (data?.demoUsage) setDemoUsage(data.demoUsage);
+      if(!res.ok && (data?.code === 'SESSION_REVOKED' || res.status === 401)) {
+        setCloudReady(false);
+        setDraft(null);
+        await signOut(auth).catch(() => {});
+        throw new Error('Your session has expired. Please sign in again.');
+      }
       if(!res.ok) {
         const retry = data?.retryAfter ? ` Try again in about ${data.retryAfter} seconds.` : '';
         throw new Error((data?.error||`Meal analysis failed (${res.status})`) + retry);
@@ -375,7 +381,34 @@ function App(){
     }catch(e){setError(e.message||'Could not analyse this meal. Please check your sign-in and connection.');}
     finally{setBusy(false);}
   };
-  const saveMeal=()=>{if(!draft)return;const t=draft.totals||{};const meal={id:crypto.randomUUID?.()||String(Date.now()),date:draft.date||today(),time:draft.time||'12:00',category:draft.category||'Meal',name:draft.meal_name||'Meal',items:draft.items||[],calories:+t.calories||0,protein:+t.protein||0,carbs:+t.carbs||0,fat:+t.fat||0,fiber:+t.fiber||0,sugar:+t.sugar||0,assessment:draft.assessment||'',quality:draft.quality||'Moderate',source:'gemini'};setMeals(prev=>[meal,...prev]);setDraft(null);setPrompt('');setPage('Dashboard');setNotice('Meal saved to today’s log.');};
+  const saveMeal = async () => {
+    if (!draft || !authUser || !cloudReady || busy) {
+      setError('Cloud sync is unavailable. Please sign in again before saving.');
+      return;
+    }
+    const t = draft.totals || {};
+    const meal = {id:crypto.randomUUID?.()||String(Date.now()),date:draft.date||today(),time:draft.time||'12:00',category:draft.category||'Meal',name:draft.meal_name||'Meal',items:draft.items||[],calories:+t.calories||0,protein:+t.protein||0,carbs:+t.carbs||0,fat:+t.fat||0,fiber:+t.fiber||0,sugar:+t.sugar||0,assessment:draft.assessment||'',quality:draft.quality||'Moderate',source:'gemini'};
+    setBusy(true);
+    setError('');
+    try {
+      // Never claim a meal was saved until Firestore confirms the write.
+      await saveCloudData(authUser.uid, {profile, weights, meals:[meal]});
+      setMeals(prev => [meal, ...prev]);
+      setDraft(null);
+      setPrompt('');
+      setPage('Dashboard');
+      setNotice('Meal saved to your cloud account.');
+    } catch (error) {
+      setSyncStatus('error');
+      setError(error.message || 'Could not save this meal to your cloud account.');
+      if (error.code === 'permission-denied') {
+        setCloudReady(false);
+        await signOut(auth).catch(() => {});
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
   const removeMeal=id=>{setMeals(m=>m.filter(x=>x.id!==id));if(authUser&&cloudReady)deleteCloudMeal(authUser.uid,id).catch(error=>{setSyncStatus('error');setAuthError(error.message||'Could not delete this meal from the cloud.');});setNotice('Meal deleted.');};
   const saveProfile=()=>{setEditingProfile(false);setNotice('Your goals have been updated.');};
   const saveWeight=()=>{const n=Number(weightInput);if(!n||n<25||n>350)return;setWeights(w=>[{date:today(),weight:n},...w.filter(x=>x.date!==today())]);setProfile(p=>({...p,weight:n}));setWeightInput('');setNotice('Weight entry saved.');};
