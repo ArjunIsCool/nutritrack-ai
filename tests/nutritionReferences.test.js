@@ -24,7 +24,7 @@ test('National Academies references are available for supported US and Canada ad
 });
 
 test('does not invent jurisdictional targets for unsupported countries or ages', () => {
-  assert.equal(getNutritionReference('iron_mg', { age: 25, sex: 'male', countryCode: 'US' }), null);
+  assert.equal(getNutritionReference('iron_mg', { age: 25, sex: 'male', countryCode: 'GB' }), null);
   assert.equal(getNutritionReference('iron_mg', { age: 70, sex: 'male', countryCode: 'IN' }), null);
   assert.equal(getNutritionReference('added_sugars_g', { age: 25, sex: 'male', countryCode: 'IN' }), null);
 });
