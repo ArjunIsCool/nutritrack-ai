@@ -13,7 +13,7 @@ test('country selector contains unique ISO-style country codes and India default
 
 test('nutrition schema includes comprehensive macro, mineral and vitamin fields', () => {
   const keys = NUTRIENTS.map(([key]) => key);
-  for (const key of ['energy_kcal', 'protein_g', 'fiber_g', 'sodium_mg', 'iron_mg', 'vitamin_c_mg', 'vitamin_b12_ug']) {
+  for (const key of ['energy_kcal', 'protein_g', 'fiber_g', 'sodium_mg', 'iron_mg', 'vitamin_c_mg', 'vitamin_b12_ug', 'choline_mg']) {
     assert.ok(keys.includes(key), key);
   }
 });
