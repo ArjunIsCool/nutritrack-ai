@@ -1,5 +1,6 @@
 import { createRemoteJWKSet, jwtVerify } from "jose";
 import { validateImageAttachments } from "./imageValidation.js";
+import { normalizeOpenFoodFactsProduct, normalizeRetailBarcode } from "./barcode.js";
 
 const FIREBASE_JWKS = createRemoteJWKSet(
   new URL("https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com")
@@ -419,7 +420,7 @@ export default {
       return json({ ok: true, confirmed: true, revokedAfter: Number(stored.revoked_after) });
     }
     if (url.pathname === "/api/razorpay-webhook" && request.method === "POST") return handleRazorpayWebhook(request, env);
-    const allowedPaths = ["/api/meal-analysis", "/api/demo-analysis", "/api/ai-status", "/api/usage", "/api/access", "/api/create-subscription", "/api/verify-subscription", "/api/cancel-subscription", "/api/abandon-subscription", "/api/delete-account-data"];
+    const allowedPaths = ["/api/meal-analysis", "/api/demo-analysis", "/api/ai-status", "/api/usage", "/api/access", "/api/barcode-lookup", "/api/create-subscription", "/api/verify-subscription", "/api/cancel-subscription", "/api/abandon-subscription", "/api/delete-account-data"];
     if (request.method !== "POST" || !allowedPaths.includes(url.pathname)) {
       return json({ error: "Not found." }, 404);
     }
@@ -444,6 +445,29 @@ export default {
       const revocation = await env.DB.prepare("SELECT revoked_after FROM session_revocations WHERE user_id = ?").bind(userId).first();
       if (revocation && identity.authTime < Number(revocation.revoked_after)) return json({ error: "Your session was signed out from another device. Please sign in again.", code: "SESSION_REVOKED" }, 401);
     } catch { return json({ error: "Account security checks are temporarily unavailable. Please try again." }, 503); }
+
+    if (url.pathname === "/api/barcode-lookup") {
+      let body;
+      try { body = await request.json(); } catch { return json({ error: "Invalid barcode lookup request." }, 400); }
+      const barcode = normalizeRetailBarcode(body.barcode);
+      if (!barcode) return json({ error: "Enter a valid UPC-A, EAN-8, EAN-13 or GTIN-14 barcode." }, 400);
+      try {
+        const fields = "code,status,product_name,product_name_en,brands,quantity,categories,countries_tags,image_front_small_url,nutriments";
+        const upstream = await fetch("https://world.openfoodfacts.org/api/v2/product/" + encodeURIComponent(barcode) + ".json?fields=" + fields, {
+          headers: { "accept": "application/json", "user-agent": "NutriTrackAI/1.0 (barcode product lookup)" },
+          signal: AbortSignal.timeout(9000)
+        });
+        if (!upstream.ok) return json({ error: "The product catalogue is temporarily unavailable. Try again later." }, 502);
+        const data = await upstream.json();
+        if (data?.status !== 1 || !data.product) return json({ error: "No product was found for this barcode. You can still log the food manually." }, 404);
+        const product = normalizeOpenFoodFactsProduct(data.product, barcode);
+        if (!product) return json({ error: "A product record exists, but it has no reliable product name. Please check the barcode." }, 422);
+        return json({ ok: true, product });
+      } catch (error) {
+        console.error("Barcode catalogue lookup failed", { message: error?.message || "unknown" });
+        return json({ error: "Could not reach the product catalogue. Check your connection and try again." }, 502);
+      }
+    }
 
     if (url.pathname === "/api/create-subscription" || url.pathname === "/api/verify-subscription" || url.pathname === "/api/cancel-subscription" || url.pathname === "/api/abandon-subscription" || url.pathname === "/api/delete-account-data") {
       let body; try { body = await request.json(); } catch { return json({ error: "Invalid request body." }, 400); }
