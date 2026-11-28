@@ -45,10 +45,10 @@ Build with `npm run build`. The Cloudflare Workers deployment is configured in `
 - Weight loss, maintenance and gain goal modes
 - Editable profile and weekly rate settings
 - Country-aware Gemini text and photo meal analysis with a versioned, comprehensive nutrient estimate schema
-- UPC-A, EAN-8, EAN-13 and GTIN-14 barcode validation with authenticated Open Food Facts v3 product lookup and sourced per-100 g nutrient snapshots
+- UPC-A, EAN-8, EAN-13 and GTIN-14 barcode validation with live camera scanning, barcode-photo decoding, keyboard-wedge USB/Bluetooth readers, authenticated Open Food Facts v3 product lookup and sourced per-100 g nutrient snapshots
 - Daily, weekly and monthly nutrient trends that show known-value subtotals and per-period meal coverage without treating missing values as zero
 - Contextual nutrition references: WHO adult sodium upper limit, ICMR-NIN 2020 adult references for supported Indian profiles, and National Academies DRI references for supported US/Canada adult profiles
-- Up to five compressed photos per analysis, with previews and server-side validation
+- Up to five compressed photos per analysis, with upload/camera capture, per-photo optional captions, previews and server-side validation
 - Itemized saved analysis snapshots with nutrient provenance and a complete meal detail view
 - Meal history, daily totals and macro tracking
 - Seven-day calorie chart
@@ -57,7 +57,7 @@ Build with `npm run build`. The Cloudflare Workers deployment is configured in `
 - Responsive dark UI and PWA install support
 
 ## Current limitations
-- US barcode lookup prefers an exact GTIN match in USDA FoodData Central when the optional `FDC_API_KEY` Worker Secret is configured; otherwise it falls back to Open Food Facts. Other markets currently use Open Food Facts as a community-contributed secondary catalogue. It does not guarantee that a product exists or that submitted label data are correct; verify against the physical package. Hardware barcode readers that type into the barcode field are supported; camera-based barcode scanning and direct GS1/manufacturer integrations are not included yet. Original meal photos are processed for analysis and are not retained in saved meal records.
+- US barcode lookup prefers an exact GTIN match in USDA FoodData Central when the optional `FDC_API_KEY` Worker Secret is configured; otherwise it falls back to Open Food Facts. Other markets currently use Open Food Facts as a community-contributed secondary catalogue. It does not guarantee that a product exists or that submitted label data are correct; verify against the physical package. Live camera scanning and barcode-photo decoding use the browser camera (HTTPS/localhost and permission required) with a ZXing decoder loaded on demand; camera focus is controlled by the device and browser, with a best-effort continuous-autofocus request where exposed. Camera photo capture is available on supported mobile browsers; desktop capture inputs may open the system camera/photo picker depending on the browser and operating system. USB/Bluetooth keyboard-wedge barcode readers are supported: pair/connect the reader at the operating-system level, focus the barcode input, then scan; the digits are typed into the field and the reader commonly sends Enter, which triggers lookup. If it does not send Enter, press Look up. Direct GS1/manufacturer integrations are not included. Original meal photos are processed for analysis and are not retained in saved meal records.
 - Nutrient trend subtotals are only the values available from logged meals, not proof of complete daily intake. Reference values are displayed only where a source and matching adult profile are available; they are not diagnoses or personalized medical advice.
 - The service worker caches the app shell and previously visited static assets; Gemini analysis requires an internet connection.
 - The first profile setup uses editable starter values (age 21, 175 cm, 70 kg, target 65 kg) as convenience defaults. Confirm or change them before relying on the calculated target.
