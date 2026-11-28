@@ -53,7 +53,7 @@ function makeMealPrompt(prompt, category, countryCode) {
   const schema = JSON.stringify(nutrientTemplate);
   return [
     "You are a careful, globally aware nutrition estimation assistant. The user selected country / food market ISO code " + country + ". Use it only to interpret local food names, common recipes, labels, and market context. Do not assume the user eats a particular cuisine.",
-    "Analyze this meal: " + JSON.stringify(prompt) + ". Meal category: " + category + ".",
+    "Analyze the meal described and/or shown in the attached photos. Text description: " + JSON.stringify(prompt) + ". Meal category: " + category + ".",
     "Return ONLY valid JSON with meal_name, items, totals, quality, assessment, assumptions, needs_clarification, and clarifying_question. Each item and totals must contain legacy numeric fields calories, protein, carbs, fat, fiber, sugar plus a nutrients object with exactly these keys: " + schema,
     "Estimate nutrients for the stated item portion and whole-meal total respectively. Use null when unknown or not responsibly estimable; never invent a value and never use zero to mean unknown. Units are encoded in keys: kcal for energy; g for protein/carbohydrate/fats/fibre/sugars/water; mg for cholesterol, sodium, potassium, calcium, iron, magnesium, zinc, phosphorus, copper, manganese, vitamins C/E/B1/B2/B3/B5/B6 and caffeine; g for alcohol; µg for selenium, iodine, vitamins A/D/K/B7/B9/B12.",
     "Use metric portions, realistic recipe estimates, and account for cooking oil where possible. Do not claim exactness or clinical precision. If portion ambiguity materially changes the estimate, set needs_clarification true and ask one concise question while still providing a provisional estimate. Do not provide diagnoses."
@@ -364,14 +364,17 @@ async function verifySubscriptionCheckoutSignature(paymentId, subscriptionId, si
   return diff === 0;
 }
 
-async function callGemini(env, model, prompt, test = false) {
+async function callGemini(env, model, prompt, test = false, imageAttachments = []) {
+  const parts = [{ text: prompt }, ...imageAttachments.map((image) => ({
+    inlineData: { mimeType: image.mimeType, data: image.data }
+  }))];
   const response = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(env.GEMINI_API_KEY)}`,
     {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
+        contents: [{ parts }],
         generationConfig: test
           ? { temperature: 0 }
           : { temperature: 0.2, responseMimeType: "application/json" },
@@ -546,7 +549,7 @@ export default {
     let body;
     try {
       const raw = await request.text();
-      if (raw.length > 12000) return json({ error: "Request is too large." }, 413);
+      if (raw.length > 9_000_000) return json({ error: "The request is too large. Please use smaller photos." }, 413);
       body = JSON.parse(raw);
     } catch {
       return json({ error: "Invalid request body." }, 400);
@@ -567,8 +570,32 @@ export default {
     const countryCode = typeof body.countryCode === "string" && /^[A-Za-z]{2}$/.test(body.countryCode)
       ? body.countryCode.toUpperCase()
       : "IN";
-    if (!prompt || prompt.length > 4000) {
-      return json({ error: "Please enter a meal description under 4,000 characters." }, 400);
+    if (body.imageAttachments !== undefined && !Array.isArray(body.imageAttachments)) {
+      return json({ error: "Photo attachments must be provided as a list." }, 400);
+    }
+    const imageAttachments = Array.isArray(body.imageAttachments) ? body.imageAttachments : [];
+    if (imageAttachments.length > 5) return json({ error: "You can attach up to five photos per analysis." }, 400);
+    let totalImageBytes = 0;
+    for (const image of imageAttachments) {
+      if (!image || !["image/jpeg", "image/png", "image/webp"].includes(image.mimeType)) {
+        return json({ error: "Use JPEG, PNG or WebP photos." }, 400);
+      }
+      const data = typeof image.data === "string" ? image.data : "";
+      if (!data || data.length > 2_000_000 || data.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(data)) {
+        return json({ error: "One of the photos is invalid or too large after compression." }, 400);
+      }
+      const padding = data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0;
+      const imageBytes = Math.floor(data.length * 3 / 4) - padding;
+      if (imageBytes <= 0 || imageBytes > 1_500_000) {
+        return json({ error: "Each compressed photo must be 1.5 MB or smaller." }, 413);
+      }
+      totalImageBytes += imageBytes;
+    }
+    if (totalImageBytes > 5 * 1024 * 1024) {
+      return json({ error: "The five photos together must be 5 MB or smaller after compression." }, 413);
+    }
+    if ((!prompt && imageAttachments.length === 0) || prompt.length > 4000) {
+      return json({ error: "Enter a short meal description or attach at least one photo." }, 400);
     }
 
     if (url.pathname === "/api/demo-analysis") {
@@ -580,7 +607,7 @@ export default {
       try { demoReservation = await reserveDemo(env.DB, userId); }
       catch { return json({ error: "Demo usage controls are unavailable. Please try again." }, 503); }
       if (!demoReservation.allowed) return json(demoReservation, demoReservation.status);
-      const demoResult = await callGemini(env, model, makeMealPrompt(prompt, category, countryCode));
+      const demoResult = await callGemini(env, model, makeMealPrompt(prompt, category, countryCode), false, imageAttachments);
       if (demoResult.error) {
         try { await refundDemo(env.DB, userId); } catch {}
         return json({ error: demoResult.error, demoUsage: await getDemoUsage(env.DB, userId) }, demoResult.status);
@@ -607,7 +634,7 @@ export default {
       }, reservation.status);
     }
 
-    const result = await callGemini(env, model, makeMealPrompt(prompt, category, countryCode));
+    const result = await callGemini(env, model, makeMealPrompt(prompt, category, countryCode), false, imageAttachments);
     if (result.error) {
       try {
         await refundAnalysis(env.DB, userId);
