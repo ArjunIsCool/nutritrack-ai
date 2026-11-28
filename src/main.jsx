@@ -71,6 +71,7 @@ function App(){
   useEffect(() => {
     if (!firebaseConfigured || !auth) { setAuthLoading(false); return undefined; }
     return onAuthStateChanged(auth, (user) => {
+      if (user) sessionRevokingRef.current = false;
       setAuthUser(user);
       setCloudReady(false);
       setSyncStatus(user ? 'loading' : 'local');
