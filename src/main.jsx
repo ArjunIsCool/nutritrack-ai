@@ -244,7 +244,10 @@ function App(){
       setDemoUsage(null);
 
       if (revokeError) {
-        setSessionRevokeError(`This device has been signed out, but NutriTrack could not confirm sign-out on every device. Sign in again and retry if needed. Details: ${revokeError}`);
+        // Keep infrastructure details in Cloud Function logs. The user only
+        // needs to know that this browser is signed out and global confirmation
+        // is pending; do not expose internal Worker/D1 diagnostics in the UI.
+        setSessionRevokeError('This device has been signed out. NutriTrack could not verify that every service has completed sign-out on all devices. Please retry this action after signing in again.');
       } else {
         setAuthError('');
         setNotice('You have been signed out on all devices.');
