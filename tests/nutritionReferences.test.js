@@ -17,6 +17,12 @@ test('ICMR India adult references depend on sex and activity category', () => {
   assert.equal(getNutritionReference('vitamin_b12_ug', { age: 25, sex: 'male', countryCode: 'IN' }).value, 2.2);
 });
 
+test('National Academies references are available for supported US and Canada adult profiles', () => {
+  assert.equal(getNutritionReference('fiber_g', { age: 25, sex: 'male', countryCode: 'US' }).value, 38);
+  assert.equal(getNutritionReference('iron_mg', { age: 25, sex: 'female', countryCode: 'CA' }).value, 18);
+  assert.equal(getNutritionReference('vitamin_c_mg', { age: 25, sex: 'female', countryCode: 'US' }).value, 75);
+});
+
 test('does not invent jurisdictional targets for unsupported countries or ages', () => {
   assert.equal(getNutritionReference('iron_mg', { age: 25, sex: 'male', countryCode: 'US' }), null);
   assert.equal(getNutritionReference('iron_mg', { age: 70, sex: 'male', countryCode: 'IN' }), null);
