@@ -1,4 +1,5 @@
 import { createRemoteJWKSet, jwtVerify } from "jose";
+import { validateImageAttachments } from "./imageValidation.js";
 
 const FIREBASE_JWKS = createRemoteJWKSet(
   new URL("https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com")
@@ -570,30 +571,9 @@ export default {
     const countryCode = typeof body.countryCode === "string" && /^[A-Za-z]{2}$/.test(body.countryCode)
       ? body.countryCode.toUpperCase()
       : "IN";
-    if (body.imageAttachments !== undefined && !Array.isArray(body.imageAttachments)) {
-      return json({ error: "Photo attachments must be provided as a list." }, 400);
-    }
-    const imageAttachments = Array.isArray(body.imageAttachments) ? body.imageAttachments : [];
-    if (imageAttachments.length > 5) return json({ error: "You can attach up to five photos per analysis." }, 400);
-    let totalImageBytes = 0;
-    for (const image of imageAttachments) {
-      if (!image || !["image/jpeg", "image/png", "image/webp"].includes(image.mimeType)) {
-        return json({ error: "Use JPEG, PNG or WebP photos." }, 400);
-      }
-      const data = typeof image.data === "string" ? image.data : "";
-      if (!data || data.length > 2_000_000 || data.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(data)) {
-        return json({ error: "One of the photos is invalid or too large after compression." }, 400);
-      }
-      const padding = data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0;
-      const imageBytes = Math.floor(data.length * 3 / 4) - padding;
-      if (imageBytes <= 0 || imageBytes > 1_500_000) {
-        return json({ error: "Each compressed photo must be 1.5 MB or smaller." }, 413);
-      }
-      totalImageBytes += imageBytes;
-    }
-    if (totalImageBytes > 5 * 1024 * 1024) {
-      return json({ error: "The five photos together must be 5 MB or smaller after compression." }, 413);
-    }
+    const imageValidation = validateImageAttachments(body.imageAttachments);
+    if (!imageValidation.ok) return json({ error: imageValidation.error }, imageValidation.status);
+    const imageAttachments = imageValidation.images;
     if ((!prompt && imageAttachments.length === 0) || prompt.length > 4000) {
       return json({ error: "Enter a short meal description or attach at least one photo." }, 400);
     }
