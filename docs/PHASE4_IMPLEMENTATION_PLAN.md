@@ -82,7 +82,7 @@ Phase 4 turns NutriTrack AI from a calorie/macro logger into a country-aware nut
 
 1. [x] Inspect existing data contracts and add the country-aware profile + versioned nutrition schema foundation.
 2. [x] Implement comprehensive text-analysis output and persist full analysis snapshots; add meal detail history.
-3. Implement photo attachments (maximum five), caption, secure validation, storage lifecycle, and image analysis.
+3. [x] Implement photo attachments (maximum five), optional caption, client-side compression, server-side validation, and Gemini image analysis. Original images are intentionally not persisted; only attachment metadata is saved.
 4. Implement barcode decoding and source adapters with provenance and ambiguity handling.
 5. Implement nutrient dashboards/trends with coverage-aware aggregation and reference targets.
 6. Complete onboarding, migration/backups, regression tests, documentation, and staged preview validation.
@@ -94,7 +94,8 @@ Phase 4 turns NutriTrack AI from a calorie/macro logger into a country-aware nut
 - Version 1 of the nutrient schema covers 40 fields across energy, macros, fats, fibre/sugars, minerals, vitamins, water, caffeine, and alcohol.
 - AI-returned unknown values remain null and are labelled unavailable; numeric estimates carry units, serving basis, and source/status metadata.
 - Saved meals preserve the full analysis snapshot, per-item nutrient snapshots, assumptions, clarification, country, model, and analysis timestamp. Meal rows open a read-only detail view.
-- Automated Node tests were added for country options and nutrition normalization. The Node test suite and Vite production build passed in GitHub Actions run #2. Latest Cloudflare Preview deployment and signed-in end-to-end behavior still need confirmation.
+- Photo input supports up to five JPEG/PNG/WebP attachments with browser-side resize/compression, optional caption, previews, and server-side count/MIME/base64/per-file/aggregate-size validation. Original images are not persisted; saved meals retain only attachment metadata.
+- Automated Node tests cover country options, nutrient normalization, provenance, versioning, and photo validation/limits. The text-analysis milestone passed the Node test suite and Vite production build in GitHub Actions run #2; the expanded photo tests have passed in run #24, with its production build still running. Latest Cloudflare Preview deployment and signed-in end-to-end behavior still need confirmation.
 
 ## Definition of done
 
