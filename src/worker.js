@@ -484,7 +484,7 @@ export default {
                 if (detailResponse.ok) {
                   const food = await detailResponse.json();
                   const product = normalizeUsdaFood(food, barcode);
-                  if (product) {
+                  if (product && Number.isFinite(product.nutrients.energy_kcal)) {
                     product.sourceRecordDate = food.publicationDate || food.modifiedDate || matches[0].publicationDate || null;
                     return json({ ok: true, product });
                   }
