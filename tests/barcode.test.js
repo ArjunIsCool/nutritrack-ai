@@ -20,13 +20,14 @@ test('normalizes product facts to explicit per-100g units and preserves missing 
     product_name: 'Example oats',
     brands: 'Example',
     quantity: '500 g',
-    nutriments: { 'energy-kcal_100g': 370, proteins_100g: 13, 'sodium_100g': 0.01, 'vitamin-c_100g': 0 }
+    nutriments: { 'energy-kcal_100g': 370, proteins_100g: 13, 'sodium_100g': 0.01, 'vitamin-c_100g': 0.01, 'vitamin-b12_100g': 0.000002 }
   }, '4006381333931', '2026-11-28T00:00:00.000Z');
   assert.equal(result.name, 'Example oats');
   assert.equal(result.nutrients.energy_kcal, 370);
   assert.equal(result.nutrients.protein_g, 13);
   assert.equal(result.nutrients.sodium_mg, 10);
-  assert.equal(result.nutrients.vitamin_c_mg, 0);
+  assert.equal(result.nutrients.vitamin_c_mg, 10);
+  assert.equal(result.nutrients.vitamin_b12_ug, 2);
   assert.equal(result.nutrients.iron_mg, null);
   assert.equal(result.basis, 'per-100g');
   assert.equal(result.source, 'Open Food Facts');
