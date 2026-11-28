@@ -453,13 +453,14 @@ export default {
       if (!barcode) return json({ error: "Enter a valid UPC-A, EAN-8, EAN-13 or GTIN-14 barcode." }, 400);
       try {
         const fields = "code,status,product_name,product_name_en,brands,quantity,categories,countries_tags,image_front_small_url,nutriments";
-        const upstream = await fetch("https://world.openfoodfacts.org/api/v2/product/" + encodeURIComponent(barcode) + ".json?fields=" + fields, {
-          headers: { "accept": "application/json", "user-agent": "NutriTrackAI/1.0 (barcode product lookup)" },
+        const countryCode = typeof body.countryCode === "string" && /^[A-Za-z]{2}$/.test(body.countryCode) ? body.countryCode.toLowerCase() : "world";
+        const upstream = await fetch("https://world.openfoodfacts.org/api/v3/product/" + encodeURIComponent(barcode) + "?cc=" + countryCode + "&fields=" + fields, {
+          headers: { "accept": "application/json", "user-agent": "NutriTrackAI/1.0 (https://github.com/ArjunIsCool/nutritrack-ai)" },
           signal: AbortSignal.timeout(9000)
         });
         if (!upstream.ok) return json({ error: "The product catalogue is temporarily unavailable. Try again later." }, 502);
         const data = await upstream.json();
-        if (data?.status !== 1 || !data.product) return json({ error: "No product was found for this barcode. You can still log the food manually." }, 404);
+        if (!["success", "success_with_warnings"].includes(data?.status) || !data.product) return json({ error: "No product was found for this barcode. You can still log the food manually." }, 404);
         const product = normalizeOpenFoodFactsProduct(data.product, barcode);
         if (!product) return json({ error: "A product record exists, but it has no reliable product name. Please check the barcode." }, 422);
         return json({ ok: true, product });
