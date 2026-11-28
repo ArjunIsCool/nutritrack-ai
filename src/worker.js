@@ -387,7 +387,12 @@ export default {
       if (!uid || uid.length > 128 || !Number.isSafeInteger(revokedAfter) || revokedAfter <= 0) return json({ error: "Invalid revocation record." }, 400);
       if (!env.DB) return json({ error: "Account service is not configured." }, 503);
       await env.DB.prepare("INSERT INTO session_revocations (user_id, revoked_after, updated_at) VALUES (?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET revoked_after = MAX(session_revocations.revoked_after, excluded.revoked_after), updated_at = excluded.updated_at").bind(uid, revokedAfter, Date.now()).run();
-      return json({ ok: true });
+      const stored = await env.DB.prepare("SELECT revoked_after FROM session_revocations WHERE user_id = ?").bind(uid).first();
+      if (!stored || Number(stored.revoked_after) < revokedAfter) {
+        console.error("Session revocation write could not be confirmed", { databaseBinding: "DB" });
+        return json({ error: "Session revocation write could not be confirmed." }, 503);
+      }
+      return json({ ok: true, confirmed: true, revokedAfter: Number(stored.revoked_after) });
     }
     if (url.pathname === "/api/razorpay-webhook" && request.method === "POST") return handleRazorpayWebhook(request, env);
     const allowedPaths = ["/api/meal-analysis", "/api/demo-analysis", "/api/ai-status", "/api/usage", "/api/access", "/api/create-subscription", "/api/verify-subscription", "/api/cancel-subscription", "/api/abandon-subscription", "/api/delete-account-data"];
