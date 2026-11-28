@@ -1,18 +1,62 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { Activity, Apple, ArrowDownRight, ArrowUpRight, BarChart3, Bell, CalendarDays, Check, ChevronDown, ChevronRight, CircleHelp, Clock3, CloudDownload, Coffee, Flame, Gauge, HeartPulse, History, Home, Leaf, LoaderCircle, LogOut, Menu, MessageSquareText, MoreHorizontal, Plus, Scale, Settings, ShieldCheck, Sparkles, Target, Trash2, Utensils, Wallet, X, Zap } from 'lucide-react';
+import { Activity, Apple, Camera, ArrowDownRight, ArrowUpRight, BarChart3, Bell, CalendarDays, Check, ChevronDown, ChevronRight, CircleHelp, Clock3, CloudDownload, Coffee, Flame, Gauge, HeartPulse, History, Home, Leaf, LoaderCircle, LogOut, Menu, MessageSquareText, MoreHorizontal, Plus, Scale, Settings, ShieldCheck, Sparkles, Target, Trash2, Utensils, Wallet, X, Zap } from 'lucide-react';
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { deleteUser, onAuthStateChanged, reauthenticateWithPopup, signInWithPopup, signOut } from 'firebase/auth';
 import { auth, firebaseConfigured, functions, googleProvider } from './firebase';
 import { httpsCallable } from 'firebase/functions';
 import { deleteCloudData, deleteCloudMeal, replaceCloudData, saveCloudData, subscribeCloudData } from './cloudSync';
+import { COUNTRIES, DEFAULT_COUNTRY_CODE } from './countries';
+import { createNutritionSnapshot, NUTRIENTS } from './nutritionSchema';
+import { aggregateNutrientTrend } from './nutritionTrends';
+import { getNutritionReference } from './nutritionReferences';
+import { normalizeRetailBarcode } from './barcode';
 import './style.css';
 
 const today = () => new Date().toISOString().slice(0,10);
-const seedProfile = { age: 21, sex: 'male', height: 175, weight: 70, targetWeight: 65, activity: 'moderate', goal: 'lose', pace: 0.25 };
+const seedProfile = { age: 21, sex: 'male', height: 175, weight: 70, targetWeight: 65, activity: 'moderate', workCategory: 'sedentary', goal: 'lose', pace: 0.25, countryCode: DEFAULT_COUNTRY_CODE };
 const seedMeals = [];
 const read = (key, fallback) => { try { const value = localStorage.getItem(key); return value ? JSON.parse(value) : fallback; } catch { return fallback; } };
 const fmt = n => Math.round(Number(n)||0).toLocaleString('en-IN');
+const numOrNull = value => value === null || value === undefined || value === '' || !Number.isFinite(Number(value)) ? null : Number(value);
+const LEGACY_NUTRIENT_FIELDS = { energy_kcal: 'calories', protein_g: 'protein', carbohydrate_g: 'carbs', total_fat_g: 'fat', fiber_g: 'fiber', total_sugars_g: 'sugar' };
+const getMealNutrientEntry = (meal, key, unit) => {
+  const saved = meal?.nutrition?.nutrients?.[key];
+  if (saved) return saved;
+  const legacyField = LEGACY_NUTRIENT_FIELDS[key];
+  const value = legacyField ? numOrNull(meal?.[legacyField]) : null;
+  return value === null ? null : { value, unit, status: 'estimated', source: 'legacy-meal-record' };
+};
+
+async function compressImageFile(file) {
+  if (typeof createImageBitmap !== 'function') throw new Error('Image processing is not supported in this browser.');
+  const bitmap = await createImageBitmap(file);
+  const maxDimension = 1600;
+  const scale = Math.min(1, maxDimension / Math.max(bitmap.width, bitmap.height));
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+  canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+  const context = canvas.getContext('2d');
+  if (!context) { bitmap.close?.(); throw new Error('Could not prepare this image.'); }
+  context.fillStyle = '#fff';
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  bitmap.close?.();
+
+  const toBlob = quality => new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', quality));
+  let blob = await toBlob(0.82);
+  if (!blob) throw new Error('Could not compress one of your photos.');
+  if (blob.size > 1_500_000) blob = await toBlob(0.68);
+  if (!blob || blob.size > 1_500_000) throw new Error('A photo is still too large after compression. Please choose a smaller image.');
+
+  const data = await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).split(',')[1] || '');
+    reader.onerror = () => reject(new Error('Could not read one of your photos.'));
+    reader.readAsDataURL(blob);
+  });
+  return { mimeType: 'image/jpeg', data, compressedSize: blob.size };
+}
 const calcTargets = p => {
   const bmr = 10*p.weight + 6.25*p.height - 5*p.age + 5;
   const factors = { sedentary:1.2, light:1.375, moderate:1.55, high:1.725 };
@@ -40,6 +84,29 @@ function App(){
   const [error,setError] = useState('');
   const [notice,setNotice] = useState('');
   const [draft,setDraft] = useState(null);
+  const [attachments,setAttachments] = useState([]);
+  const [mealPhotoCameraActive,setMealPhotoCameraActive] = useState(false);
+  const [mealPhotoCameraError,setMealPhotoCameraError] = useState('');
+  const mealPhotoVideoRef = useRef(null);
+  const mealPhotoStreamRef = useRef(null);
+  const [barcodeInput,setBarcodeInput] = useState('');
+  const [barcodeBusy,setBarcodeBusy] = useState(false);
+  const [barcodeError,setBarcodeError] = useState('');
+  const [barcodeProduct,setBarcodeProduct] = useState(null);
+  const [barcodeCameraActive,setBarcodeCameraActive] = useState(false);
+  const [barcodeCameraStatus,setBarcodeCameraStatus] = useState('');
+  const [barcodePhotoBusy,setBarcodePhotoBusy] = useState(false);
+  const [barcodePhotoStatus,setBarcodePhotoStatus] = useState('');
+  const [barcodePhotoCameraActive,setBarcodePhotoCameraActive] = useState(false);
+  const barcodePhotoVideoRef = useRef(null);
+  const barcodePhotoStreamRef = useRef(null);
+  const barcodeVideoRef = useRef(null);
+  const barcodeStreamRef = useRef(null);
+  const barcodeScannerRef = useRef(null);
+  const [trendNutrient,setTrendNutrient] = useState('sodium_mg');
+  const [trendPeriod,setTrendPeriod] = useState('daily');
+  const attachmentUrlsRef = useRef(new Set());
+  const [selectedMealId,setSelectedMealId] = useState(null);
   const [showSetup,setShowSetup] = useState(false);
   const [mobileNav,setMobileNav] = useState(false);
   const [editingProfile,setEditingProfile] = useState(false);
@@ -65,6 +132,11 @@ function App(){
   const [accountDeleteError,setAccountDeleteError] = useState('');
   const targets = useMemo(()=>calcTargets(profile),[profile]);
   const todayMeals = meals.filter(m=>m.date===today());
+  const selectedMeal = meals.find(meal => String(meal.id) === String(selectedMealId)) || null;
+  const nutrientTrend = useMemo(() => aggregateNutrientTrend(meals, trendNutrient, trendPeriod), [meals, trendNutrient, trendPeriod]);
+  const latestTrend = nutrientTrend[nutrientTrend.length - 1] || null;
+  const trendReference = useMemo(() => getNutritionReference(trendNutrient, profile), [trendNutrient, profile]);
+  const trendMeta = { sodium_mg: ['Sodium', 'mg'], added_sugars_g: ['Added sugars', 'g'], fiber_g: ['Fibre', 'g'], iron_mg: ['Iron', 'mg'], vitamin_b12_ug: ['Vitamin B12', 'µg'], vitamin_c_mg: ['Vitamin C', 'mg'] }[trendNutrient] || ['Nutrient', ''];
   const totals = todayMeals.reduce((a,m)=>({calories:a.calories+(+m.calories||0),protein:a.protein+(+m.protein||0),carbs:a.carbs+(+m.carbs||0),fat:a.fat+(+m.fat||0),fiber:a.fiber+(+m.fiber||0)}),{calories:0,protein:0,carbs:0,fat:0,fiber:0});
   const remaining = targets.calories-totals.calories;
   const progress = Math.min(100,totals.calories/targets.calories*100);
@@ -96,10 +168,10 @@ function App(){
           const legacyProfile = read('nt_profile', null);
           const legacyMeals = read('nt_meals', null);
           const legacyWeights = read('nt_weights', null);
-          const migratedProfile = legacyProfile || profile;
+          const migratedProfile = { ...seedProfile, ...(legacyProfile || profile), countryCode: /^[A-Z]{2}$/.test((legacyProfile || profile).countryCode || '') ? (legacyProfile || profile).countryCode : DEFAULT_COUNTRY_CODE };
           const migratedMeals = Array.isArray(legacyMeals) ? legacyMeals : meals;
           const migratedWeights = Array.isArray(legacyWeights) ? legacyWeights : weights;
-          if (legacyProfile) setProfile(legacyProfile);
+          if (legacyProfile) setProfile(migratedProfile);
           if (Array.isArray(legacyMeals)) setMeals(legacyMeals);
           if (Array.isArray(legacyWeights)) setWeights(legacyWeights);
           await saveCloudData(authUser.uid, { profile: migratedProfile, meals: migratedMeals, weights: migratedWeights });
@@ -110,7 +182,7 @@ function App(){
         } else {
           migrated = true;
           if (changed === 'initial' || changed === 'profile') {
-            if (cloud.profile) setProfile(current => JSON.stringify(current) === JSON.stringify(cloud.profile) ? current : cloud.profile);
+            if (cloud.profile) { const remoteProfile = { ...seedProfile, ...cloud.profile, countryCode: /^[A-Z]{2}$/.test(cloud.profile.countryCode || '') ? cloud.profile.countryCode : DEFAULT_COUNTRY_CODE }; setProfile(current => JSON.stringify(current) === JSON.stringify(remoteProfile) ? current : remoteProfile); }
             if (cloud.weights) setWeights(current => JSON.stringify(current) === JSON.stringify(cloud.weights) ? current : cloud.weights);
           }
           if (changed === 'initial' || changed === 'meals') {
@@ -190,6 +262,34 @@ function App(){
 
   useEffect(()=>{ if('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(()=>{}); },[]);
   useEffect(()=>{ if(notice){const t=setTimeout(()=>setNotice(''),3200);return()=>clearTimeout(t);} },[notice]);
+  useEffect(() => () => { attachmentUrlsRef.current.forEach(url => URL.revokeObjectURL(url)); attachmentUrlsRef.current.clear(); }, []);
+  useEffect(() => {
+    if (page !== 'AI Food Logger') { setBarcodeCameraActive(false); setBarcodePhotoCameraActive(false); setMealPhotoCameraActive(false); }
+  }, [page]);
+  useEffect(() => {
+    if (!mealPhotoCameraActive) return;
+    let cancelled = false;
+    const startPhotoCamera = async () => {
+      if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) throw new Error('Camera capture requires HTTPS (or localhost) and browser camera permission.');
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: false });
+      if (cancelled) { stream.getTracks().forEach(track => track.stop()); return; }
+      mealPhotoStreamRef.current = stream;
+      const video = mealPhotoVideoRef.current;
+      if (!video) throw new Error('Camera preview could not be initialized.');
+      video.srcObject = stream;
+      await video.play();
+      const track = stream.getVideoTracks?.()[0];
+      try { if (track?.getCapabilities?.().focusMode?.includes('continuous')) await track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }); } catch { /* Camera autofocus is device/browser controlled. */ }
+    };
+    startPhotoCamera().catch(error => { if (!cancelled) { setMealPhotoCameraError(error?.name === 'NotAllowedError' ? 'Camera permission was denied. Allow camera access in your browser settings.' : error?.message || 'Could not open the camera.'); setMealPhotoCameraActive(false); } });
+    return () => {
+      cancelled = true;
+      mealPhotoStreamRef.current?.getTracks().forEach(track => track.stop());
+      mealPhotoStreamRef.current = null;
+      if (mealPhotoVideoRef.current) mealPhotoVideoRef.current.srcObject = null;
+    };
+  }, [mealPhotoCameraActive]);
+  useEffect(() => { attachments.forEach(item => { URL.revokeObjectURL(item.previewUrl); attachmentUrlsRef.current.delete(item.previewUrl); }); setAttachments([]); }, [authUser?.uid]);
 
   const handleGoogleSignIn = async () => {
     if (!firebaseConfigured || !auth) {
@@ -363,15 +463,362 @@ function App(){
     } catch (error) { setBillingError(error.message || 'Could not start checkout.'); }
     finally { setCheckoutBusy(false); }
   };
+  const requestBarcodeAutofocus = async () => {
+    const track = barcodeStreamRef.current?.getVideoTracks?.()[0] || barcodeVideoRef.current?.srcObject?.getVideoTracks?.()[0];
+    if (!track) { setBarcodeCameraStatus('Camera is still starting. Wait a moment, then try autofocus again.'); return; }
+    const modes = track.getCapabilities?.().focusMode || [];
+    try {
+      if (modes.includes('continuous')) {
+        await track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] });
+        setBarcodeCameraStatus('Continuous autofocus requested. Hold the barcode steady inside the frame.');
+      } else if (modes.includes('single-shot')) {
+        await track.applyConstraints({ advanced: [{ focusMode: 'single-shot' }] });
+        setBarcodeCameraStatus('One autofocus adjustment was requested. Hold the barcode steady inside the frame.');
+      } else {
+        setBarcodeCameraStatus('This camera does not expose a focus control to the browser. Autofocus is handled automatically by the camera; move slightly closer/farther and avoid glare.');
+      }
+    } catch {
+      setBarcodeCameraStatus('The browser could not change focus on this camera. Autofocus is handled by the camera; adjust distance and lighting.');
+    }
+  };
+  useEffect(() => {
+    if (!barcodePhotoCameraActive) return;
+    let cancelled = false;
+    const startBarcodePhotoCamera = async () => {
+      if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) throw new Error('Camera capture requires HTTPS (or localhost) and browser camera permission.');
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: false });
+      if (cancelled) { stream.getTracks().forEach(track => track.stop()); return; }
+      barcodePhotoStreamRef.current = stream;
+      const video = barcodePhotoVideoRef.current;
+      if (!video) throw new Error('Camera preview could not be initialized.');
+      video.srcObject = stream;
+      await video.play();
+      const track = stream.getVideoTracks?.()[0];
+      try { if (track?.getCapabilities?.().focusMode?.includes('continuous')) await track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }); } catch { /* Camera autofocus is device/browser controlled. */ }
+    };
+    startBarcodePhotoCamera().catch(error => { if (!cancelled) { setBarcodePhotoStatus(error?.name === 'NotAllowedError' ? 'Camera permission was denied. Allow camera access in your browser settings.' : error?.message || 'Could not open the camera.'); setBarcodePhotoCameraActive(false); } });
+    return () => {
+      cancelled = true;
+      barcodePhotoStreamRef.current?.getTracks().forEach(track => track.stop());
+      barcodePhotoStreamRef.current = null;
+      if (barcodePhotoVideoRef.current) barcodePhotoVideoRef.current.srcObject = null;
+    };
+  }, [barcodePhotoCameraActive]);
+  useEffect(() => {
+    if (!barcodeCameraActive) return;
+    let cancelled = false;
+    let scanner = null;
+    let statusTimer = null;
+    const stopTracks = () => {
+      barcodeStreamRef.current?.getTracks().forEach(track => track.stop());
+      barcodeStreamRef.current = null;
+      if (barcodeVideoRef.current) barcodeVideoRef.current.srcObject = null;
+    };
+    const startCameraScanner = async () => {
+      if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
+        throw new Error('Camera access requires HTTPS (or localhost) and a browser camera permission. Open the secure app URL and allow camera access in your browser settings.');
+      }
+      setBarcodeCameraStatus('Requesting camera permission…');
+      const { BrowserMultiFormatReader, BrowserCodeReader } = await import(/* @vite-ignore */ 'https://esm.sh/@zxing/browser@0.2.1?bundle');
+      if (cancelled) return;
+      scanner = new BrowserMultiFormatReader();
+      barcodeScannerRef.current = scanner;
+      setBarcodeCameraStatus('Starting camera… point the barcode inside the frame.');
+      const video = barcodeVideoRef.current;
+      if (!video) throw new Error('Camera preview could not be initialized.');
+      const cameras = await BrowserCodeReader.listVideoInputDevices();
+      if (!cameras.length) throw new Error('No camera was found. Connect a webcam or use a barcode reader/manual entry.');
+      const selectedCamera = cameras.find(camera => /back|rear|environment/i.test(camera.label)) || cameras[0];
+      await scanner.decodeFromVideoDevice(selectedCamera.deviceId, video, (result, scanError, controls) => {
+        if (cancelled) return;
+        if (result) {
+          const raw = result.getText?.() || result.text || '';
+          const normalized = normalizeRetailBarcode(raw);
+          if (normalized) {
+            setBarcodeInput(normalized);
+            setBarcodeError('');
+            if (statusTimer) clearTimeout(statusTimer);
+            setBarcodeCameraStatus('Barcode found: ' + normalized + '. Select Look up to find the product.');
+            setBarcodeCameraActive(false);
+            controls?.stop?.();
+            scanner?.reset();
+            return;
+          }
+          setBarcodeCameraStatus('A code was detected, but it is not a supported retail barcode. Keep scanning or enter the digits manually.');
+          return;
+        }
+        if (scanError?.name && !['NotFoundException','ChecksumException','FormatException'].includes(scanError.name)) {
+          setBarcodeCameraStatus('Camera is active. Hold the barcode steady, fill the frame and avoid glare.');
+        } else if (!statusTimer) {
+          setBarcodeCameraStatus('Camera is active — looking for a barcode. Hold it steady inside the frame.');
+        }
+      });
+      if (cancelled) { scanner.reset(); return; }
+      const stream = video.srcObject;
+      if (stream) {
+        barcodeStreamRef.current = stream;
+        const track = stream.getVideoTracks?.()[0];
+        if (track?.applyConstraints) {
+          try { await track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }); } catch { /* Autofocus is browser/camera controlled when this constraint is unavailable. */ }
+        }
+      }
+      setBarcodeCameraStatus('Camera is active — looking for a barcode. Hold it steady inside the frame.');
+      statusTimer = setTimeout(() => { if (!cancelled) setBarcodeCameraStatus('No barcode detected yet. Move closer, keep the full bars in frame, improve lighting and try autofocus.'); }, 8000);
+    };
+    startCameraScanner().catch(error => {
+      if (cancelled) return;
+      const message = error?.name === 'NotAllowedError'
+        ? 'Camera permission was denied. Allow camera access for this site in your browser settings, then try again.'
+        : error?.name === 'NotFoundError'
+          ? 'No camera was found on this device. Connect a webcam or use a barcode reader/manual entry.'
+          : error?.name === 'NotReadableError'
+            ? 'The camera is already in use by another app or tab. Close it there and try again.'
+            : error?.message?.includes('Failed to fetch') || error?.message?.includes('Importing a module script failed') ? 'The barcode decoder could not load. Check your internet connection, then try again or use a barcode photo/manual entry.' : error?.message || 'Could not start the camera. Check browser permissions and try again.';
+      setBarcodeError(message);
+      setBarcodeCameraStatus('');
+      setBarcodeCameraActive(false);
+    });
+    return () => {
+      cancelled = true;
+      if (statusTimer) clearTimeout(statusTimer);
+      scanner?.reset();
+      if (barcodeScannerRef.current === scanner) barcodeScannerRef.current = null;
+      stopTracks();
+    };
+  }, [barcodeCameraActive]);
+  const captureBarcodePhoto = () => {
+    const video = barcodePhotoVideoRef.current;
+    if (!video || video.readyState < 2 || !video.videoWidth || !video.videoHeight) {
+      setBarcodePhotoStatus('The camera is not ready yet. Wait for the preview, then capture again.');
+      return;
+    }
+    const canvas = document.createElement('canvas');
+    const scale = Math.min(1, 1800 / Math.max(video.videoWidth, video.videoHeight));
+    canvas.width = Math.max(1, Math.round(video.videoWidth * scale));
+    canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
+    const context = canvas.getContext('2d');
+    if (!context) { setBarcodePhotoStatus('Could not capture this photo.'); return; }
+    context.drawImage(video, 0, 0, canvas.width, canvas.height);
+    canvas.toBlob(blob => {
+      if (!blob) { setBarcodePhotoStatus('Could not prepare the captured photo.'); return; }
+      const file = new File([blob], 'barcode-camera-' + Date.now() + '.jpg', { type: 'image/jpeg' });
+      handleBarcodePhoto({ target: { files: [file], value: '' } });
+      setBarcodePhotoCameraActive(false);
+    }, 'image/jpeg', 0.92);
+  };
+  const handleBarcodePhoto = async event => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    if (!['image/jpeg','image/png','image/webp'].includes(file.type)) {
+      setBarcodePhotoStatus('Choose a JPEG, PNG or WebP image.');
+      return;
+    }
+    if (file.size > 15 * 1024 * 1024) {
+      setBarcodePhotoStatus('The barcode photo must be 15 MB or smaller.');
+      return;
+    }
+    setBarcodePhotoBusy(true);
+    setBarcodePhotoStatus('Reading barcode from photo…');
+    setBarcodeError('');
+    let objectUrl = '';
+    try {
+      const { BrowserMultiFormatReader } = await import(/* @vite-ignore */ 'https://esm.sh/@zxing/browser@0.2.1?bundle');
+      const reader = new BrowserMultiFormatReader();
+      const image = new Image();
+      objectUrl = URL.createObjectURL(file);
+      image.src = objectUrl;
+      await image.decode();
+      const result = await reader.decodeFromImageElement(image);
+      const raw = result.getText?.() || result.text || '';
+      const normalized = normalizeRetailBarcode(raw);
+      if (!normalized) throw new Error('A barcode was detected, but it is not a supported UPC/EAN retail code.');
+      setBarcodeInput(normalized);
+      setBarcodePhotoStatus('Barcode found: ' + normalized + '. Select Look up to find the product.');
+    } catch (error) {
+      setBarcodePhotoStatus(error?.name === 'NotFoundException'
+        ? 'No barcode found in this photo. Try a sharper, well-lit photo with the full barcode visible.'
+        : error?.message || 'Could not read a barcode from this photo. Try another image or enter the digits manually.');
+    } finally {
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+      setBarcodePhotoBusy(false);
+    }
+  };
+  const lookupBarcode = async () => {
+    if (!authUser || !cloudReady) { setBarcodeError('Sign in and wait for cloud sync before looking up a product.'); return; }
+    if (!barcodeInput.trim()) { setBarcodeError('Enter a product barcode or scan it with a connected barcode reader.'); return; }
+    setBarcodeBusy(true); setBarcodeError(''); setBarcodeProduct(null);
+    try {
+      const token = await authUser.getIdToken();
+      const response = await fetch('/api/barcode-lookup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({ barcode: barcodeInput, countryCode: profile.countryCode || DEFAULT_COUNTRY_CODE })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok && (data?.code === 'SESSION_REVOKED' || response.status === 401)) {
+        setCloudReady(false);
+        await signOut(auth).catch(() => {});
+        throw new Error('Your session has expired. Please sign in again.');
+      }
+      if (!response.ok) throw new Error(data.error || 'Product lookup failed.');
+      setBarcodeProduct(data.product);
+    } catch (error) {
+      setBarcodeError(error.message || 'Could not look up this barcode.');
+    } finally {
+      setBarcodeBusy(false);
+    }
+  };
+  const saveBarcodeProduct = async () => {
+    if (!barcodeProduct || !authUser || !cloudReady || barcodeBusy) return;
+    const n = barcodeProduct.nutrients || {};
+    if (!Number.isFinite(n.energy_kcal)) {
+      setBarcodeError('This catalogue record has no energy value per 100 g, so it cannot be added to your calorie diary safely. Check the package label or log it manually.');
+      return;
+    }
+    const nutrition = createNutritionSnapshot(n, { status: 'sourced', source: barcodeProduct.source, basis: 'per-100g' });
+    const item = {
+      name: barcodeProduct.name,
+      quantity: '100 g',
+      calories: n.energy_kcal,
+      protein: n.protein_g,
+      carbs: n.carbohydrate_g,
+      fat: n.total_fat_g,
+      fiber: n.fiber_g,
+      nutrients: n,
+      nutrition
+    };
+    const meal = {
+      id: crypto.randomUUID?.() || String(Date.now()),
+      date: today(),
+      time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }),
+      category: 'Snack',
+      name: barcodeProduct.name,
+      countryCode: profile.countryCode || DEFAULT_COUNTRY_CODE,
+      items: [{ ...item, calories: n.energy_kcal, protein: n.protein_g, carbs: n.carbohydrate_g, fat: n.total_fat_g }],
+      nutrition,
+      analysisSnapshot: {
+        schemaVersion: 1, mealName: barcodeProduct.name, category: 'Snack',
+        countryCode: profile.countryCode || DEFAULT_COUNTRY_CODE,
+        rawPrompt: 'Barcode ' + barcodeProduct.barcode,
+        attachments: [],
+        items: [{ ...item, calories: n.energy_kcal, protein: n.protein_g, carbs: n.carbohydrate_g, fat: n.total_fat_g }],
+        totals: { calories: n.energy_kcal, protein: n.protein_g, carbs: n.carbohydrate_g, fat: n.total_fat_g, fiber: n.fiber_g },
+        assumptions: ['Product nutrient values are from the catalogue and shown per 100 g; confirm against the package label.'],
+        needsClarification: false, clarifyingQuestion: '',
+        assessment: 'Catalogue product record. Values are not independently laboratory-verified.',
+        quality: 'Sourced catalogue data', model: null, source: barcodeProduct.source,
+        analyzedAt: barcodeProduct.retrievedAt,
+        product: {
+          barcode: barcodeProduct.barcode, brand: barcodeProduct.brand,
+          quantity: barcodeProduct.quantity, sourceUrl: barcodeProduct.sourceUrl,
+          retrievedAt: barcodeProduct.retrievedAt, sourceRecordDate: barcodeProduct.sourceRecordDate || null, confidence: barcodeProduct.confidence,
+          basis: barcodeProduct.basis, market: barcodeProduct.market
+        }
+      },
+      calories: n.energy_kcal, protein: n.protein_g, carbs: n.carbohydrate_g,
+      fat: n.total_fat_g, fiber: n.fiber_g, sugar: n.total_sugars_g,
+      assessment: 'Catalogue product record. Values are not independently laboratory-verified.',
+      quality: 'Sourced catalogue data', source: barcodeProduct.source
+    };
+    setBarcodeBusy(true); setBarcodeError('');
+    try {
+      await saveCloudData(authUser.uid, { profile, weights, meals: [meal] });
+      setMeals(prev => [meal, ...prev]);
+      setBarcodeProduct(null); setBarcodeInput('');
+      setNotice('Product added to your diary using per-100 g catalogue values.');
+      setPage('Dashboard');
+    } catch (error) {
+      setBarcodeError(error.message || 'Could not save this product to your cloud diary.');
+      setSyncStatus('error');
+    } finally {
+      setBarcodeBusy(false);
+    }
+  };
+  const handleAttachmentSelection = event => {
+    const incoming = Array.from(event.target.files || []);
+    event.target.value = '';
+    if (!incoming.length) return;
+    if (attachments.length + incoming.length > 5) {
+      setError('You can attach up to five photos per analysis.');
+      return;
+    }
+    const unsupported = incoming.find(file => !['image/jpeg', 'image/png', 'image/webp'].includes(file.type));
+    if (unsupported) {
+      setError('Use JPEG, PNG or WebP photos. Other formats are not supported yet.');
+      return;
+    }
+    const oversized = incoming.find(file => file.size > 15 * 1024 * 1024);
+    if (oversized) {
+      setError('Each original photo must be 15 MB or smaller.');
+      return;
+    }
+    const combinedOriginalSize = [...attachments.map(item => item.file.size), ...incoming.map(file => file.size)].reduce((total, size) => total + size, 0);
+    if (combinedOriginalSize > 30 * 1024 * 1024) {
+      setError('The selected original photos must total 30 MB or less.');
+      return;
+    }
+    const next = incoming.map(file => {
+      const previewUrl = URL.createObjectURL(file);
+      attachmentUrlsRef.current.add(previewUrl);
+      return { file, previewUrl, caption: '' };
+    });
+    setAttachments(current => [...current, ...next]);
+    setError('');
+  };
+  const captureMealPhoto = () => {
+    const video = mealPhotoVideoRef.current;
+    if (!video || video.readyState < 2 || !video.videoWidth || !video.videoHeight) {
+      setMealPhotoCameraError('The camera is not ready yet. Wait for the preview, then capture again.');
+      return;
+    }
+    if (attachments.length >= 5) {
+      setMealPhotoCameraError('You can attach up to five photos per analysis.');
+      return;
+    }
+    const canvas = document.createElement('canvas');
+    const scale = Math.min(1, 1600 / Math.max(video.videoWidth, video.videoHeight));
+    canvas.width = Math.max(1, Math.round(video.videoWidth * scale));
+    canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
+    const context = canvas.getContext('2d');
+    if (!context) { setMealPhotoCameraError('Could not capture this photo.'); return; }
+    context.drawImage(video, 0, 0, canvas.width, canvas.height);
+    canvas.toBlob(blob => {
+      if (!blob) { setMealPhotoCameraError('Could not prepare the captured photo.'); return; }
+      const file = new File([blob], 'meal-camera-' + Date.now() + '.jpg', { type: 'image/jpeg' });
+      handleAttachmentSelection({ target: { files: [file], value: '' } });
+      setMealPhotoCameraActive(false);
+      setMealPhotoCameraError('');
+      setNotice('Photo captured. Add an optional caption before analysing.');
+    }, 'image/jpeg', 0.88);
+  };
+  const removeAttachment = previewUrl => {
+    URL.revokeObjectURL(previewUrl);
+    attachmentUrlsRef.current.delete(previewUrl);
+    setAttachments(current => current.filter(item => item.previewUrl !== previewUrl));
+  };
+  const clearAttachments = () => {
+    attachments.forEach(item => {
+      URL.revokeObjectURL(item.previewUrl);
+      attachmentUrlsRef.current.delete(item.previewUrl);
+    });
+    setAttachments([]);
+  };
   const analyzeMeal = async () => {
-    if(!prompt.trim()) return;
+    if(!prompt.trim() && attachments.length===0) return;
     if(!authUser || !cloudReady){setError('Your account is not connected to cloud sync. Please sign in again.');return;}
     setBusy(true);setError('');setDraft(null);
+    const contextualPrompt = [prompt.trim(), ...attachments.map((item,index)=>item.caption?.trim() ? 'Photo '+(index+1)+' caption: '+item.caption.trim() : '').filter(Boolean)].filter(Boolean).join('\n\n');
     try{
       const token=await authUser.getIdToken();
       const demoMode = access?.status !== 'trialing' && access?.status !== 'active';
       const endpoint = demoMode ? '/api/demo-analysis' : '/api/meal-analysis';
-      const res=await fetch(endpoint,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${token}`},body:JSON.stringify({prompt,category,model})});
+      const preparedImages = [];
+      for (const item of attachments) preparedImages.push(await compressImageFile(item.file));
+      const totalImageBytes = preparedImages.reduce((total, image) => total + image.compressedSize, 0);
+      if (totalImageBytes > 5 * 1024 * 1024) throw new Error('The five photos together must be 5 MB or smaller after compression. Remove a photo or choose smaller images.');
+      const imageAttachments = preparedImages.map(({ mimeType, data }) => ({ mimeType, data }));
+      const res=await fetch(endpoint,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${token}`},body:JSON.stringify({prompt:contextualPrompt,category,model,countryCode:profile.countryCode||DEFAULT_COUNTRY_CODE,imageAttachments})});
       const data=await res.json();
       if (data?.usage) setAiUsage(data.usage);
       if (data?.demoUsage) setDemoUsage(data.demoUsage);
@@ -386,7 +833,7 @@ function App(){
         throw new Error((data?.error||`Meal analysis failed (${res.status})`) + retry);
       }
       const parsed=JSON.parse((data.text||'').replace(/^\x60\x60\x60json\s*/,'').replace(/\x60\x60\x60$/,''));
-      setDraft({...parsed,category,rawPrompt:prompt,date:today(),time:new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',hour12:false})});
+      const legacy = parsed.totals || {}; const nutrientValues = { ...(legacy.nutrients || {}), energy_kcal: legacy.nutrients?.energy_kcal ?? legacy.calories, protein_g: legacy.nutrients?.protein_g ?? legacy.protein, carbohydrate_g: legacy.nutrients?.carbohydrate_g ?? legacy.carbs, total_fat_g: legacy.nutrients?.total_fat_g ?? legacy.fat, fiber_g: legacy.nutrients?.fiber_g ?? legacy.fiber, total_sugars_g: legacy.nutrients?.total_sugars_g ?? legacy.sugar }; const nutrition = createNutritionSnapshot(nutrientValues, { status: 'estimated', source: 'gemini', basis: 'whole-meal' }); const items = (parsed.items || []).map(item => { const values = item.nutrients || {}; return { ...item, nutrition: createNutritionSnapshot({ ...values, energy_kcal: values.energy_kcal ?? item.calories, protein_g: values.protein_g ?? item.protein, carbohydrate_g: values.carbohydrate_g ?? item.carbs, total_fat_g: values.total_fat_g ?? item.fat, fiber_g: values.fiber_g ?? item.fiber, total_sugars_g: values.total_sugars_g ?? item.sugar }, { status: 'estimated', source: 'gemini', basis: 'item-portion' }) }; }); setDraft({...parsed,items,nutrition,category,rawPrompt:prompt,attachments:attachments.map(({file,caption})=>({name:file.name,mimeType:file.type,originalSize:file.size,caption:caption||''})),countryCode:profile.countryCode||DEFAULT_COUNTRY_CODE,date:today(),time:new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',hour12:false})});
     }catch(e){setError(e.message||'Could not analyse this meal. Please check your sign-in and connection.');}
     finally{setBusy(false);}
   };
@@ -396,7 +843,7 @@ function App(){
       return;
     }
     const t = draft.totals || {};
-    const meal = {id:crypto.randomUUID?.()||String(Date.now()),date:draft.date||today(),time:draft.time||'12:00',category:draft.category||'Meal',name:draft.meal_name||'Meal',items:draft.items||[],calories:+t.calories||0,protein:+t.protein||0,carbs:+t.carbs||0,fat:+t.fat||0,fiber:+t.fiber||0,sugar:+t.sugar||0,assessment:draft.assessment||'',quality:draft.quality||'Moderate',source:'gemini'};
+    const meal = {id:crypto.randomUUID?.()||String(Date.now()),date:draft.date||today(),time:draft.time||'12:00',category:draft.category||'Meal',name:draft.meal_name||'Meal',countryCode:draft.countryCode||profile.countryCode||DEFAULT_COUNTRY_CODE,items:draft.items||[],nutrition:draft.nutrition||createNutritionSnapshot({energy_kcal:t.calories,protein_g:t.protein,carbohydrate_g:t.carbs,total_fat_g:t.fat,fiber_g:t.fiber,total_sugars_g:t.sugar},{status:'estimated',source:'gemini',basis:'whole-meal'}),analysisSnapshot:{schemaVersion:1,mealName:draft.meal_name||'Meal',category:draft.category||'Meal',countryCode:draft.countryCode||profile.countryCode||DEFAULT_COUNTRY_CODE,rawPrompt:draft.rawPrompt||'',attachments:draft.attachments||[],items:draft.items||[],totals:t,assumptions:draft.assumptions||[],needsClarification:Boolean(draft.needs_clarification),clarifyingQuestion:draft.clarifying_question||'',assessment:draft.assessment||'',quality:draft.quality||'Moderate',model,source:'gemini',analyzedAt:new Date().toISOString()},calories:numOrNull(t.calories),protein:numOrNull(t.protein),carbs:numOrNull(t.carbs),fat:numOrNull(t.fat),fiber:numOrNull(t.fiber),sugar:numOrNull(t.sugar),assessment:draft.assessment||'',quality:draft.quality||'Moderate',source:'gemini'};
     setBusy(true);
     setError('');
     try {
@@ -405,6 +852,7 @@ function App(){
       setMeals(prev => [meal, ...prev]);
       setDraft(null);
       setPrompt('');
+      clearAttachments();
       setPage('Dashboard');
       setNotice('Meal saved to your cloud account.');
     } catch (error) {
@@ -461,12 +909,13 @@ function App(){
           </section>
           <section className="dashboard-grid"><div className="card chart-card"><div className="section-head"><div><h3>Calorie overview</h3><p>Your intake over the last 7 days</p></div><span className="chart-legend"><i/> Calories</span></div><div className="chart-wrap"><ResponsiveContainer width="100%" height="100%"><AreaChart data={chartData} margin={{top:12,right:4,left:-20,bottom:0}}><defs><linearGradient id="calFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#a7d96b" stopOpacity={.25}/><stop offset="95%" stopColor="#a7d96b" stopOpacity={0}/></linearGradient></defs><CartesianGrid stroke="#292e27" strokeDasharray="3 5" vertical={false}/><XAxis dataKey="day" axisLine={false} tickLine={false} tick={{fill:'#858d7e',fontSize:11}} dy={10}/><YAxis axisLine={false} tickLine={false} tick={{fill:'#858d7e',fontSize:10}}/><Tooltip contentStyle={{background:'#20251e',border:'1px solid #343c30',borderRadius:10,color:'#f4f5ef'}}/><Area type="monotone" dataKey="calories" stroke="#a7d96b" strokeWidth={2.5} fill="url(#calFill)"/></AreaChart></ResponsiveContainer></div><div className="chart-bottom"><span>Daily target</span><b>{fmt(targets.calories)} kcal</b></div></div>
             <div className="card quick-card"><div className="section-head"><div><h3>Quick actions</h3><p>Keep your routine moving</p></div><MoreHorizontal size={18} className="muted"/></div><button className="quick-action" onClick={()=>setPage('AI Food Logger')}><div className="quick-icon green"><MessageSquareText size={18}/></div><div><b>Log a meal with AI</b><small>Describe what you ate</small></div><ChevronRight size={17}/></button><button className="quick-action" onClick={()=>setPage('Goals')}><div className="quick-icon violet"><Scale size={18}/></div><div><b>Update your weight</b><small>Keep your progress current</small></div><ChevronRight size={17}/></button><button className="quick-action" onClick={()=>setPage('Analytics')}><div className="quick-icon orange"><BarChart3 size={18}/></div><div><b>Review your trends</b><small>See your nutrition patterns</small></div><ChevronRight size={17}/></button></div></section>
-          <section className="card recent-card"><div className="section-head"><div><h3>Recent meals</h3><p>Your latest food entries</p></div><button className="text-btn" onClick={()=>setPage('Meal History')}>View history <ChevronRight size={14}/></button></div>{displayMeals.length===0?<EmptyState icon={Utensils} title="No meals logged yet" desc="Your meals will appear here once you start tracking." action="Log your first meal" onClick={()=>setPage('AI Food Logger')}/>:<div className="meal-list">{displayMeals.map(m=><MealRow key={m.id} meal={m} onDelete={removeMeal}/>)}</div>}</section>
+          <section className="card recent-card"><div className="section-head"><div><h3>Recent meals</h3><p>Your latest food entries</p></div><button className="text-btn" onClick={()=>setPage('Meal History')}>View history <ChevronRight size={14}/></button></div>{displayMeals.length===0?<EmptyState icon={Utensils} title="No meals logged yet" desc="Your meals will appear here once you start tracking." action="Log your first meal" onClick={()=>setPage('AI Food Logger')}/>:<div className="meal-list">{displayMeals.map(m=><MealRow key={m.id} meal={m} onDelete={removeMeal} onSelect={id=>{setSelectedMealId(id);setPage('Meal Details');}}/>)}</div>}</section>
         </>}
-        {page==='AI Food Logger'&&<><div className="page-intro"><div className="ai-badge"><Sparkles size={14}/> GEMINI-POWERED MEAL ANALYSIS</div><h2>What did you eat?</h2><p>Describe your meal naturally. NutriTrack will estimate the nutrition and explain the meal quality.</p></div><div className="logger-layout"><div className="card logger-card"><div className="logger-top"><div className="logger-icon"><Sparkles size={20}/></div><div><b>AI meal assistant</b><small>Nutrition estimates, made simple</small></div><span className="secure-label"><ShieldCheck size={13}/> Private log</span></div>{access?.status === 'trialing' || access?.status === 'active' ? <div className="field-help">{usageLoading?'Loading AI usage…':aiUsage?`AI analyses: ${aiUsage.daily.used}/${aiUsage.daily.limit} today · ${aiUsage.monthly.used}/${aiUsage.monthly.limit} this month`:'AI usage information is temporarily unavailable.'}</div> : <div className="demo-meter"><b>{demoUsage?.remaining ?? '—'} of 5 free demo analyses remaining</b><small>Try NutriTrack before starting your card-verified 3-day trial.</small></div>}<label className="field-label">MEAL TYPE</label><div className="meal-types">{['Breakfast','Lunch','Dinner','Snack'].map(x=><button key={x} className={category===x?'selected':''} onClick={()=>setCategory(x)}>{x==='Breakfast'?<Coffee size={15}/>:x==='Snack'?<Apple size={15}/>:<Utensils size={15}/>} {x}</button>)}</div><label className="field-label" htmlFor="meal-prompt">DESCRIBE YOUR MEAL</label><textarea id="meal-prompt" value={prompt} onChange={e=>setPrompt(e.target.value)} placeholder="e.g. I had 2 medium dosas, one bowl of sambar and 2 tablespoons of coconut chutney..." rows={5}/><div className="prompt-hint"><CircleHelp size={14}/> Include portion sizes and cooking methods for better estimates.</div>{error&&<div className="error-box"><X size={15}/>{error}</div>}<button className="primary-btn full-btn" onClick={analyzeMeal} disabled={busy||!prompt.trim()||(access?.status !== 'trialing' && access?.status !== 'active' && !!demoUsage && demoUsage.remaining<=0)||((access?.status === 'trialing'||access?.status === 'active')&&!!aiUsage&&(aiUsage.daily.remaining<=0||aiUsage.monthly.remaining<=0))}>{busy?<><LoaderCircle className="spin" size={17}/> Analysing your meal...</>:<><Sparkles size={17}/> Analyse meal</>}</button><div className="privacy-note"><ShieldCheck size={14}/> Your prompt is sent to Google Gemini for analysis. Your saved meal records sync to your account.</div></div><div className="card tips-card"><div className="tips-icon"><Zap size={18}/></div><h3>Get better estimates</h3><ul><li>Mention the number of pieces or serving size.</li><li>Include oil, ghee, butter or sauces when you can.</li><li>Say whether food was homemade or restaurant-prepared.</li></ul><div className="example-prompt"><small>EXAMPLE PROMPT</small><p>“2 homemade chapatis, 1 cup dal tadka with 1 tsp ghee, and a small bowl of cucumber raita.”</p></div></div></div>{draft&&<div className="card draft-card"><div className="section-head"><div><div className="ai-badge"><Sparkles size={13}/> AI ESTIMATE</div><h3>{draft.meal_name||'Meal breakdown'}</h3><p>Review the estimate before saving.</p></div><button className="icon-btn" onClick={()=>setDraft(null)}><X size={18}/></button></div>{draft.needs_clarification&&<div className="warning-box"><CircleHelp size={16}/><div><b>One detail could improve accuracy</b><p>{draft.clarifying_question}</p></div></div>}<div className="draft-total"><strong>{fmt(draft.totals?.calories)}</strong><span>kcal estimated</span><span className="quality-pill">{draft.quality||'Estimated'}</span></div><div className="draft-macros">{[['Protein',draft.totals?.protein,'blue'],['Carbs',draft.totals?.carbs,'yellow'],['Fat',draft.totals?.fat,'purple'],['Fibre',draft.totals?.fiber,'green']].map(([n,v,c])=><div key={n}><span>{n}</span><b>{fmt(v)}g</b></div>)}</div><div className="food-breakdown">{(draft.items||[]).map((it,i)=><div className="food-line" key={i}><div><b>{it.name}</b><small>{fmt(it.protein)}g protein · {fmt(it.carbs)}g carbs · {fmt(it.fat)}g fat</small></div><strong>{fmt(it.calories)} <small>kcal</small></strong></div>)}</div><div className="assessment"><div><HeartPulse size={17}/> Meal quality assessment</div><p>{draft.assessment}</p>{draft.assumptions?.length>0&&<small>Assumptions: {draft.assumptions.join('; ')}</small>}</div><div className="draft-actions"><button className="secondary-btn" onClick={()=>setDraft(null)}>Discard</button><button className="primary-btn" onClick={saveMeal}><Check size={17}/> Save meal to diary</button></div></div>}</>}
-        {page==='Meal History'&&<><div className="page-intro"><h2>Your food diary</h2><p>Every meal, in one place. Review and manage your nutrition history.</p></div><div className="card history-card"><div className="section-head"><div><h3>All meals</h3><p>{meals.length} meals recorded on this device</p></div><button className="primary-btn small-btn" onClick={()=>setPage('AI Food Logger')}><Plus size={16}/> Add meal</button></div>{meals.length===0?<EmptyState icon={History} title="Your diary is empty" desc="Start by logging your first meal with AI." action="Log a meal" onClick={()=>setPage('AI Food Logger')}/>:<div className="meal-list">{meals.map(m=><MealRow key={m.id} meal={m} onDelete={removeMeal} showDate/>)}</div>}</div></>}
-        {page==='Analytics'&&<><div className="page-intro"><h2>Your nutrition insights</h2><p>Look beyond individual meals and understand your habits over time.</p></div><div className="stats-grid analytics-stats"><StatCard icon={Flame} label="TODAY'S INTAKE" value={`${fmt(totals.calories)} kcal`} sub={`${Math.round(progress)}% of daily goal`} color="orange"/><StatCard icon={Activity} label="PROTEIN TODAY" value={`${fmt(totals.protein)} g`} sub={`Target ${targets.protein} g`} color="green"/><StatCard icon={CalendarDays} label="MEALS LOGGED" value={todayMeals.length} sub="Today" color="violet"/></div><div className="card chart-card analytics-chart"><div className="section-head"><div><h3>Daily calorie intake</h3><p>Last seven days</p></div><span className="chart-legend"><i/> Calories</span></div><div className="chart-wrap tall"><ResponsiveContainer width="100%" height="100%"><AreaChart data={chartData} margin={{top:12,right:10,left:-18,bottom:0}}><defs><linearGradient id="anaFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#a7d96b" stopOpacity={.25}/><stop offset="95%" stopColor="#a7d96b" stopOpacity={0}/></linearGradient></defs><CartesianGrid stroke="#292e27" strokeDasharray="3 5" vertical={false}/><XAxis dataKey="day" axisLine={false} tickLine={false} tick={{fill:'#858d7e',fontSize:12}} dy={10}/><YAxis axisLine={false} tickLine={false} tick={{fill:'#858d7e',fontSize:11}}/><Tooltip contentStyle={{background:'#20251e',border:'1px solid #343c30',borderRadius:10,color:'#f4f5ef'}}/><Area type="monotone" dataKey="calories" stroke="#a7d96b" strokeWidth={2.5} fill="url(#anaFill)"/></AreaChart></ResponsiveContainer></div></div><div className="card insight-card"><div className="insight-icon"><Sparkles size={18}/></div><div><b>Build a useful baseline</b><p>Log meals consistently for at least 7–14 days. Your trend data will become more informative as you build a history.</p></div></div></>}
-        {page==='Goals'&&<><div className="page-intro"><h2>Your goals, your pace</h2><p>Set a realistic target. Your daily nutrition budget updates automatically.</p></div><div className="goals-layout"><div className="card goal-form"><div className="section-head"><div><h3>Personal profile & goals</h3><p>Used to estimate your energy needs</p></div><button className="text-btn" onClick={()=>setEditingProfile(!editingProfile)}>{editingProfile?'Cancel':'Edit details'}</button></div><div className="profile-grid"><NumberField label="Age" value={profile.age} suffix="years" disabled={!editingProfile} onChange={v=>setProfile(p=>({...p,age:+v}))}/><NumberField label="Height" value={profile.height} suffix="cm" disabled={!editingProfile} onChange={v=>setProfile(p=>({...p,height:+v}))}/><NumberField label="Current weight" value={profile.weight} suffix="kg" disabled={!editingProfile} onChange={v=>setProfile(p=>({...p,weight:+v}))}/><NumberField label="Target weight" value={profile.targetWeight} suffix="kg" disabled={!editingProfile} onChange={v=>setProfile(p=>({...p,targetWeight:+v}))}/></div>{editingProfile&&<button className="primary-btn" onClick={saveProfile}>Save profile</button>}<div className="form-divider"/><label className="field-label">YOUR OBJECTIVE</label><div className="goal-options">{[['lose','Lose weight',ArrowDownRight],['maintain','Maintain',Scale],['gain','Gain weight',ArrowUpRight]].map(([v,l,I])=><button key={v} className={profile.goal===v?'chosen':''} onClick={()=>setProfile(p=>({...p,goal:v}))}><I size={18}/><b>{l}</b></button>)}</div><label className="field-label">ACTIVITY LEVEL</label><select value={profile.activity} onChange={e=>setProfile(p=>({...p,activity:e.target.value}))}><option value="sedentary">Sedentary – little or no exercise</option><option value="light">Light – exercise 1–3 days/week</option><option value="moderate">Moderate – exercise 3–5 days/week</option><option value="high">Very active – hard exercise most days</option></select>{profile.goal!=='maintain'&&<><label className="field-label">DESIRED WEEKLY CHANGE</label><div className="pace-options">{[0.25,0.5,0.75].map(v=><button key={v} className={profile.pace===v?'chosen':''} onClick={()=>setProfile(p=>({...p,pace:v}))}><b>{v} kg</b><small>per week</small></button>)}</div></>}<div className="form-divider"/><label className="field-label">WEIGHT CHECK-IN</label><div className="weight-entry"><input type="number" step="0.1" placeholder="Today's weight in kg" value={weightInput} onChange={e=>setWeightInput(e.target.value)}/><button className="secondary-btn" onClick={saveWeight}>Save weight</button></div></div><div className="goals-side"><div className="card target-card"><div className="metric-icon green"><Target size={18}/></div><span>ESTIMATED DAILY CALORIE TARGET</span><strong>{fmt(targets.calories)}</strong><small>kcal per day</small><div className="target-row"><span>Estimated BMR</span><b>{fmt(targets.bmr)} kcal</b></div><div className="target-row"><span>Estimated TDEE</span><b>{fmt(targets.tdee)} kcal</b></div><div className="target-row"><span>Goal adjustment</span><b>{profile.goal==='maintain'?'0':`${profile.goal==='lose'?'−':'+'}${fmt(profile.pace*7700/7)} kcal`}</b></div></div><div className="card macro-target-card"><h3>Suggested macro targets</h3><p>Starting estimates to support your goal.</p>{[['Protein',targets.protein,'blue'],['Carbohydrates',targets.carbs,'yellow'],['Fat',targets.fat,'purple']].map(([n,v,c])=><div className="target-row" key={n}><span><i className={`dot ${c}`}/>{n}</span><b>{v} g</b></div>)}</div><div className="safety-note"><ShieldCheck size={17}/><p>These are estimates, not medical advice. Actual needs vary. Avoid aggressive weight changes and consult a qualified professional if you have medical or dietary concerns.</p></div></div></div></>}
+        {page==='AI Food Logger'&&<><div className="page-intro"><div className="ai-badge"><Sparkles size={14}/> GEMINI-POWERED MEAL ANALYSIS</div><h2>What did you eat?</h2><p>Describe your meal naturally. NutriTrack will estimate the nutrition and explain the meal quality.</p></div><div className="logger-layout"><div className="card logger-card"><div className="logger-top"><div className="logger-icon"><Sparkles size={20}/></div><div><b>AI meal assistant</b><small>Nutrition estimates, made simple</small></div><span className="secure-label"><ShieldCheck size={13}/> Private log</span></div>{access?.status === 'trialing' || access?.status === 'active' ? <div className="field-help">{usageLoading?'Loading AI usage…':aiUsage?`AI analyses: ${aiUsage.daily.used}/${aiUsage.daily.limit} today · ${aiUsage.monthly.used}/${aiUsage.monthly.limit} this month`:'AI usage information is temporarily unavailable.'}</div> : <div className="demo-meter"><b>{demoUsage?.remaining ?? '—'} of 5 free demo analyses remaining</b><small>Try NutriTrack before starting your card-verified 3-day trial.</small></div>}<label className="field-label">MEAL TYPE</label><div className="meal-types">{['Breakfast','Lunch','Dinner','Snack'].map(x=><button key={x} className={category===x?'selected':''} onClick={()=>setCategory(x)}>{x==='Breakfast'?<Coffee size={15}/>:x==='Snack'?<Apple size={15}/>:<Utensils size={15}/>} {x}</button>)}</div><label className="field-label" htmlFor="meal-prompt">DESCRIBE YOUR MEAL</label><textarea id="meal-prompt" value={prompt} onChange={e=>setPrompt(e.target.value)} placeholder="Describe your meal, portions and cooking method — or add photos below..." rows={5}/><div className="attachment-toolbar"><div className="attachment-actions"><label className="attachment-picker"><Plus size={15}/><span>Upload photos</span><small>{attachments.length}/5</small><input type="file" accept="image/jpeg,image/png,image/webp" multiple onChange={handleAttachmentSelection} disabled={busy||!!draft||attachments.length>=5}/></label><label className="attachment-picker"><Camera size={15}/><span>Take photo</span><input type="file" accept="image/jpeg,image/png,image/webp" capture="environment" onChange={handleAttachmentSelection} disabled={busy||!!draft||attachments.length>=5}/></label><button type="button" className="secondary-btn" onClick={()=>{setMealPhotoCameraError('');setBarcodeCameraActive(false);setBarcodePhotoCameraActive(false);setMealPhotoCameraActive(value=>!value);}} disabled={busy||!!draft||attachments.length>=5}>{mealPhotoCameraActive?'Close webcam':'Use webcam'}</button></div><small>JPEG, PNG or WebP · up to 5 photos.</small>{mealPhotoCameraActive&&<div className="meal-camera-panel"><video ref={mealPhotoVideoRef} className="barcode-camera-preview" autoPlay muted playsInline/><button type="button" className="primary-btn" onClick={captureMealPhoto}>Capture photo</button></div>}{mealPhotoCameraError&&<div className="error-box">{mealPhotoCameraError}</div>}</div>{attachments.length>0&&<div className="attachment-grid">{attachments.map(item=><div className="attachment-preview" key={item.previewUrl}><img src={item.previewUrl} alt={item.file.name}/><div><span>{item.file.name}</span><button type="button" onClick={()=>removeAttachment(item.previewUrl)} disabled={busy||!!draft} aria-label={"Remove "+item.file.name}><X size={14}/></button></div><textarea className="photo-caption" rows={2} placeholder="Optional caption for this photo…" aria-label={"Optional caption for "+item.file.name} value={item.caption||""} onChange={event=>setAttachments(current=>current.map(photo=>photo.previewUrl===item.previewUrl?{...photo,caption:event.target.value}:photo))} disabled={busy||!!draft}/></div>)}</div>}<div className="prompt-hint"><CircleHelp size={14}/> Optional: add a separate caption under each photo; these notes are sent with that photo to give the analysis more context.</div><div className="barcode-panel"><div><b>Log a packaged food by barcode</b><small>Use live camera scanning, take or upload a barcode photo, connect a USB/Bluetooth scanner, or type the UPC/EAN digits. Product lookup is separate from meal photo analysis.</small></div><div className="barcode-entry"><input aria-label="Product barcode" inputMode="numeric" autoComplete="off" placeholder="Scan or enter 8, 12, 13 or 14 digits" value={barcodeInput} onChange={event=>{setBarcodeInput(event.target.value);setBarcodeError('');setBarcodeProduct(null);}} onKeyDown={event=>{if(event.key==='Enter'){event.preventDefault();lookupBarcode();}}} disabled={barcodeBusy}/><button type="button" className="secondary-btn" onClick={lookupBarcode} disabled={barcodeBusy||!barcodeInput.trim()}>{barcodeBusy?'Looking up…':'Look up product'}</button></div><div className="barcode-camera-actions"><button type="button" className="secondary-btn" onClick={()=>{setBarcodeError('');if(barcodeCameraActive){setBarcodeCameraActive(false);setBarcodeCameraStatus('Scanner stopped. No barcode was detected.');}else{setBarcodeCameraStatus('');setBarcodePhotoCameraActive(false);setMealPhotoCameraActive(false);setBarcodeCameraActive(true);}}} disabled={barcodeBusy}>{barcodeCameraActive?'Stop live scanner':'Start live camera scanner'}</button>{barcodeCameraActive&&<button type="button" className="secondary-btn" onClick={requestBarcodeAutofocus}>Try autofocus</button>}<button type="button" className="secondary-btn" onClick={()=>{setBarcodePhotoStatus('');setBarcodeCameraActive(false);setMealPhotoCameraActive(false);setBarcodePhotoCameraActive(value=>!value);}} disabled={barcodePhotoBusy||barcodeBusy}>{barcodePhotoCameraActive?'Close photo camera':'Use camera for barcode photo'}</button><label className="attachment-picker"><Plus size={14}/><span>Upload / take barcode photo</span><input type="file" accept="image/jpeg,image/png,image/webp" capture="environment" onChange={handleBarcodePhoto} disabled={barcodePhotoBusy||barcodeBusy}/></label>{barcodePhotoCameraActive&&<div className="meal-camera-panel"><video ref={barcodePhotoVideoRef} className="barcode-camera-preview" autoPlay muted playsInline/><button type="button" className="primary-btn" onClick={captureBarcodePhoto}>Capture barcode photo</button></div>}{barcodeCameraActive&&<><video ref={barcodeVideoRef} className="barcode-camera-preview" autoPlay muted playsInline/><small className="barcode-camera-note">{barcodeCameraStatus||'Starting scanner…'} Autofocus is requested where the camera/browser supports it; tap or move closer only if needed.</small></>}{barcodePhotoStatus&&<small className="barcode-camera-note">{barcodePhotoStatus}</small>}</div><small className="barcode-camera-note">USB/Bluetooth scanners usually behave like a keyboard: pair/connect the scanner in your device settings, click the barcode field, then scan. The digits should type into the field automatically; many scanners also send Enter to start lookup. If yours does not, press Look up product. The barcode decoder is downloaded from esm.sh on demand; camera/photo decoding runs locally in your browser and barcode images are not uploaded.</small>{barcodeError&&<div className="error-box">{barcodeError}</div>}{barcodeProduct&&<div className="barcode-result"><div><b>{barcodeProduct.name}</b><small>{[barcodeProduct.brand,barcodeProduct.quantity].filter(Boolean).join(' · ')||'Packaged food'} · {barcodeProduct.barcode}</small></div><div className="barcode-macros"><span>{barcodeProduct.nutrients.energy_kcal==null?'Energy unavailable':Math.round(barcodeProduct.nutrients.energy_kcal)+' kcal'}</span><span>{barcodeProduct.nutrients.protein_g==null?'Protein unavailable':barcodeProduct.nutrients.protein_g+' g protein'}</span><span>{barcodeProduct.nutrients.carbohydrate_g==null?'Carbs unavailable':barcodeProduct.nutrients.carbohydrate_g+' g carbs'}</span><span>{barcodeProduct.nutrients.total_fat_g==null?'Fat unavailable':barcodeProduct.nutrients.total_fat_g+' g fat'}</span></div><small>{barcodeProduct.source} · per 100 g · retrieved {new Date(barcodeProduct.retrievedAt).toLocaleString()}</small><small>{barcodeProduct.sourceRecordDate?`Source record date: ${barcodeProduct.sourceRecordDate}`:'Source record date not provided'}</small><small>{barcodeProduct.warning}</small><a href={barcodeProduct.sourceUrl} target="_blank" rel="noreferrer">View source record</a><button type="button" className="primary-btn" onClick={saveBarcodeProduct} disabled={barcodeBusy||barcodeProduct.nutrients.energy_kcal==null}>Add 100 g to diary</button></div>}</div>{error&&<div className="error-box"><X size={15}/>{error}</div>}<button className="primary-btn full-btn" onClick={analyzeMeal} disabled={busy||(!prompt.trim()&&attachments.length===0)||(access?.status !== 'trialing' && access?.status !== 'active' && !!demoUsage && demoUsage.remaining<=0)||((access?.status === 'trialing'||access?.status === 'active')&&!!aiUsage&&(aiUsage.daily.remaining<=0||aiUsage.monthly.remaining<=0))}>{busy?<><LoaderCircle className="spin" size={17}/> Analysing your meal...</>:<><Sparkles size={17}/> Analyse meal</>}</button><div className="privacy-note"><ShieldCheck size={14}/> Your text and selected photos are sent through NutriTrack’s Worker to Gemini for analysis. Original photos are not retained; only attachment metadata is saved with the meal.</div></div><div className="card tips-card"><div className="tips-icon"><Zap size={18}/></div><h3>Get better estimates</h3><ul><li>Mention the number of pieces or serving size.</li><li>Include oil, ghee, butter or sauces when you can.</li><li>Say whether food was homemade or restaurant-prepared.</li></ul><div className="example-prompt"><small>EXAMPLE PROMPT</small><p>“2 homemade chapatis, 1 cup dal tadka with 1 tsp ghee, and a small bowl of cucumber raita.”</p></div></div></div>{draft&&<div className="card draft-card"><div className="section-head"><div><div className="ai-badge"><Sparkles size={13}/> AI ESTIMATE</div><h3>{draft.meal_name||'Meal breakdown'}</h3><p>Review the estimate before saving.</p></div><button className="icon-btn" onClick={()=>setDraft(null)}><X size={18}/></button></div>{draft.needs_clarification&&<div className="warning-box"><CircleHelp size={16}/><div><b>One detail could improve accuracy</b><p>{draft.clarifying_question}</p></div></div>}<div className="draft-total"><strong>{fmt(draft.totals?.calories)}</strong><span>kcal estimated</span><span className="quality-pill">{draft.quality||'Estimated'}</span></div><div className="draft-macros">{[['Protein',draft.totals?.protein,'blue'],['Carbs',draft.totals?.carbs,'yellow'],['Fat',draft.totals?.fat,'purple'],['Fibre',draft.totals?.fiber,'green']].map(([n,v,c])=><div key={n}><span>{n}</span><b>{fmt(v)}g</b></div>)}</div><div className="food-breakdown">{(draft.items||[]).map((it,i)=><div className="food-line" key={i}><div><b>{it.name}</b><small>{fmt(it.protein)}g protein · {fmt(it.carbs)}g carbs · {fmt(it.fat)}g fat</small></div><strong>{fmt(it.calories)} <small>kcal</small></strong></div>)}</div><div className="assessment"><div><HeartPulse size={17}/> Meal quality assessment</div><p>{draft.assessment}</p>{draft.assumptions?.length>0&&<small>Assumptions: {draft.assumptions.join('; ')}</small>}</div><div className="draft-actions"><button className="secondary-btn" onClick={()=>setDraft(null)}>Discard</button><button className="primary-btn" onClick={saveMeal}><Check size={17}/> Save meal to diary</button></div></div>}</>}
+        {page==='Meal Details'&&selectedMeal&&<><div className="page-intro"><button className="text-btn" onClick={()=>setPage('Meal History')}><ChevronDown size={14}/> Back to food diary</button><h2>{selectedMeal.name}</h2><p>{selectedMeal.date} · {selectedMeal.time} · {selectedMeal.category} · {selectedMeal.countryCode||selectedMeal.analysisSnapshot?.countryCode||profile.countryCode||DEFAULT_COUNTRY_CODE}</p></div><div className="card detail-card"><div className="section-head"><div><h3>Nutrition overview</h3><p>Saved analysis snapshot · schema v{selectedMeal.nutrition?.schemaVersion||'legacy'}</p></div><span className="quality-pill">{selectedMeal.quality||'Logged'}</span></div><div className="detail-nutrient-grid">{NUTRIENTS.map(([key,label,unit,group])=>{const entry=getMealNutrientEntry(selectedMeal,key,unit);return <div className="detail-nutrient" key={key}><span>{label}</span><b>{entry?.value===null||entry?.value===undefined?'Not available':`${fmt(entry.value)} ${entry.unit||unit}`}</b><small>{entry?.status==='estimated'?'AI estimate':entry?.status==='sourced'?(entry?.source||'Sourced data'):'Unavailable'}</small></div>})}</div></div><div className="card detail-card"><h3>Food items and portions</h3>{(selectedMeal.items||selectedMeal.analysisSnapshot?.items||[]).length===0?<p className="field-help">No itemized breakdown was saved for this older meal.</p>:(selectedMeal.items||selectedMeal.analysisSnapshot?.items||[]).map((item,index)=><div className="detail-food" key={index}><b>{item.name||'Food item'}</b><small>{item.calories==null?'—':fmt(item.calories)+' kcal'} · {item.protein==null?'—':fmt(item.protein)+'g protein'} · {item.carbs==null?'—':fmt(item.carbs)+'g carbs'} · {item.fat==null?'—':fmt(item.fat)+'g fat'}</small>{item.nutrition?.nutrients&&<div className="detail-mini-nutrients">{NUTRIENTS.filter(([key])=>item.nutrition.nutrients[key]?.value!==null&&item.nutrition.nutrients[key]?.value!==undefined).map(([key,label,unit])=><span key={key}>{label}: {fmt(item.nutrition.nutrients[key].value)} {item.nutrition.nutrients[key].unit||unit}</span>)}</div>}</div>)}</div>{(selectedMeal.analysisSnapshot?.attachments||[]).length>0&&<div className="card detail-card"><h3>Photos used for this analysis</h3>{selectedMeal.analysisSnapshot.attachments.map((item,index)=><div className="detail-food" key={index}><b>{item.name||"Meal photo"}</b><small>{item.mimeType||"Image"} · {Math.round((item.originalSize||0)/1024)} KB · Original photo was not retained</small>{item.caption&&<small>Caption: {item.caption}</small>}</div>)}</div>}{selectedMeal.analysisSnapshot?.product&&<div className="card detail-card"><h3>Product identification & provenance</h3><div className="detail-food"><b>Barcode {selectedMeal.analysisSnapshot.product.barcode}</b><small>{[selectedMeal.analysisSnapshot.product.brand,selectedMeal.analysisSnapshot.product.quantity].filter(Boolean).join(' · ')||'Packaged product'}</small><small>Source: {selectedMeal.analysisSnapshot.product.source||selectedMeal.source||'Catalogue'} · {selectedMeal.analysisSnapshot.product.basis||'Per 100 g'}</small><small>Retrieved: {selectedMeal.analysisSnapshot.product.retrievedAt?new Date(selectedMeal.analysisSnapshot.product.retrievedAt).toLocaleString():'Not recorded'}</small>{selectedMeal.analysisSnapshot.product.sourceRecordDate&&<small>Source record date: {selectedMeal.analysisSnapshot.product.sourceRecordDate}</small>}<a href={selectedMeal.analysisSnapshot.product.sourceUrl} target="_blank" rel="noreferrer">Open original catalogue record</a></div></div>}<div className="card detail-card"><h3>Assessment and assumptions</h3><p className="detail-assessment">{selectedMeal.assessment||selectedMeal.analysisSnapshot?.assessment||'No assessment was saved.'}</p>{(selectedMeal.analysisSnapshot?.assumptions||[]).length>0&&<><b className="detail-subhead">Assumptions</b><ul className="detail-list">{selectedMeal.analysisSnapshot.assumptions.map((item,index)=><li key={index}>{item}</li>)}</ul></>}{selectedMeal.analysisSnapshot?.needsClarification&&<div className="warning-box"><CircleHelp size={15}/>{selectedMeal.analysisSnapshot.clarifyingQuestion||'The analysis indicated that a clarification could improve accuracy.'}</div>}{selectedMeal.analysisSnapshot?.rawPrompt&&<><b className="detail-subhead">Original description</b><p className="detail-prompt">{selectedMeal.analysisSnapshot.rawPrompt}</p></>}<small className="field-help">Nutritional values are estimates unless explicitly marked as sourced. Unavailable values are not treated as zero.</small></div></>}
+        {page==='Meal History'&&<><div className="page-intro"><h2>Your food diary</h2><p>Every meal, in one place. Review and manage your nutrition history.</p></div><div className="card history-card"><div className="section-head"><div><h3>All meals</h3><p>{meals.length} meals recorded on this device</p></div><button className="primary-btn small-btn" onClick={()=>setPage('AI Food Logger')}><Plus size={16}/> Add meal</button></div>{meals.length===0?<EmptyState icon={History} title="Your diary is empty" desc="Start by logging your first meal with AI." action="Log a meal" onClick={()=>setPage('AI Food Logger')}/>:<div className="meal-list">{meals.map(m=><MealRow key={m.id} meal={m} onDelete={removeMeal} onSelect={id=>{setSelectedMealId(id);setPage('Meal Details');}} showDate/>)}</div>}</div></>}
+        {page==='Analytics'&&<><div className="page-intro"><h2>Your nutrition insights</h2><p>Look beyond individual meals and understand your habits over time.</p></div><div className="stats-grid analytics-stats"><StatCard icon={Flame} label="TODAY'S INTAKE" value={`${fmt(totals.calories)} kcal`} sub={`${Math.round(progress)}% of daily goal`} color="orange"/><StatCard icon={Activity} label="PROTEIN TODAY" value={`${fmt(totals.protein)} g`} sub={`Target ${targets.protein} g`} color="green"/><StatCard icon={CalendarDays} label="MEALS LOGGED" value={todayMeals.length} sub="Today" color="violet"/></div><div className="card chart-card analytics-chart"><div className="section-head"><div><h3>Daily calorie intake</h3><p>Last seven days</p></div><span className="chart-legend"><i/> Calories</span></div><div className="chart-wrap tall"><ResponsiveContainer width="100%" height="100%"><AreaChart data={chartData} margin={{top:12,right:10,left:-18,bottom:0}}><defs><linearGradient id="anaFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#a7d96b" stopOpacity={.25}/><stop offset="95%" stopColor="#a7d96b" stopOpacity={0}/></linearGradient></defs><CartesianGrid stroke="#292e27" strokeDasharray="3 5" vertical={false}/><XAxis dataKey="day" axisLine={false} tickLine={false} tick={{fill:'#858d7e',fontSize:12}} dy={10}/><YAxis axisLine={false} tickLine={false} tick={{fill:'#858d7e',fontSize:11}}/><Tooltip contentStyle={{background:'#20251e',border:'1px solid #343c30',borderRadius:10,color:'#f4f5ef'}}/><Area type="monotone" dataKey="calories" stroke="#a7d96b" strokeWidth={2.5} fill="url(#anaFill)"/></AreaChart></ResponsiveContainer></div></div><div className="card chart-card nutrient-trend-card"><div className="section-head"><div><h3>Micronutrient & nutrient trends</h3><p>Observed values from saved meals, with data coverage shown</p></div></div><div className="trend-controls"><label><span className="field-label">NUTRIENT</span><select value={trendNutrient} onChange={event=>setTrendNutrient(event.target.value)}><option value="sodium_mg">Sodium (mg)</option><option value="added_sugars_g">Added sugars (g)</option><option value="fiber_g">Fibre (g)</option><option value="iron_mg">Iron (mg)</option><option value="vitamin_b12_ug">Vitamin B12 (µg)</option><option value="vitamin_c_mg">Vitamin C (mg)</option></select></label><div className="trend-periods" role="group" aria-label="Trend aggregation period">{[['daily','Daily'],['weekly','Weekly'],['monthly','Monthly']].map(([value,label])=><button type="button" key={value} className={trendPeriod===value?'chosen':''} onClick={()=>setTrendPeriod(value)}>{label}</button>)}</div></div>{nutrientTrend.length===0?<div className="trend-empty"><b>No meal data yet</b><small>Save meals with available nutrient information to build this trend.</small></div>:<>{trendReference&&<div className="trend-reference"><div><b>{trendReference.kind==='upper-limit'?'Public-health upper limit':'Daily reference value'}</b><span>{trendReference.label}: {trendReference.value} {trendReference.unit}</span><small>{trendPeriod==='daily'?'For context only; food logging may be incomplete.':'Daily benchmark shown for context; the selected chart buckets are '+trendPeriod+' totals and are not directly comparable.'}</small></div><a href={trendReference.sourceUrl} target="_blank" rel="noreferrer">Source: {trendReference.source}</a></div>}<div className="trend-coverage"><div><b>{latestTrend?Math.round(latestTrend.coverage*100):0}%</b><small>coverage in latest period</small></div><div><b>{latestTrend?.knownMeals||0} / {latestTrend?.mealCount||0}</b><small>meals with known {trendMeta[0].toLowerCase()} values</small></div><div><b>{latestTrend?.observedTotal==null?'—':Number(latestTrend.observedTotal.toFixed(2))+' '+trendMeta[1]}</b><small>known-value subtotal only</small></div></div><div className="chart-wrap tall"><ResponsiveContainer width="100%" height="100%"><AreaChart data={nutrientTrend} margin={{top:12,right:10,left:-18,bottom:0}}><defs><linearGradient id="nutrientFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#8bbd70" stopOpacity={.25}/><stop offset="95%" stopColor="#8bbd70" stopOpacity={0}/></linearGradient></defs><CartesianGrid stroke="#292e27" strokeDasharray="3 5" vertical={false}/><XAxis dataKey="period" axisLine={false} tickLine={false} tick={{fill:'#858d7e',fontSize:11}} dy={10}/><YAxis axisLine={false} tickLine={false} tick={{fill:'#858d7e',fontSize:11}}/><Tooltip contentStyle={{background:'#20251e',border:'1px solid #343c30',borderRadius:10,color:'#f4f5ef'}} formatter={(value,name,props)=>[value==null?'No known values':Number(value).toFixed(2)+' '+trendMeta[1], 'Known-value subtotal']} labelFormatter={(label,index)=>{const item=nutrientTrend.find(row=>row.period===label);return item?label+' · '+Math.round(item.coverage*100)+'% coverage':''}}/><Area type="monotone" dataKey="observedTotal" stroke="#a7d96b" strokeWidth={2.5} fill="url(#nutrientFill)" connectNulls={false}/></AreaChart></ResponsiveContainer></div><small className="trend-disclaimer">These are partial observed subtotals, not complete daily intake totals or adequacy scores. Unknown nutrients are excluded, never treated as zero. Coverage is the share of logged meals with a known value.</small></>}</div><div className="card insight-card"><div className="insight-icon"><Sparkles size={18}/></div><div><b>Build a useful baseline</b><p>Log meals consistently for at least 7–14 days. Your trend data will become more informative as you build a history.</p></div></div></>}
+        {page==='Goals'&&<><div className="page-intro"><h2>Your goals, your pace</h2><p>Set a realistic target. Your daily nutrition budget updates automatically.</p></div><div className="goals-layout"><div className="card goal-form"><div className="section-head"><div><h3>Personal profile & goals</h3><p>Used to estimate your energy needs</p></div><button className="text-btn" onClick={()=>setEditingProfile(!editingProfile)}>{editingProfile?'Cancel':'Edit details'}</button></div><div className="profile-grid"><NumberField label="Age" value={profile.age} suffix="years" disabled={!editingProfile} onChange={v=>setProfile(p=>({...p,age:+v}))}/><NumberField label="Height" value={profile.height} suffix="cm" disabled={!editingProfile} onChange={v=>setProfile(p=>({...p,height:+v}))}/><NumberField label="Current weight" value={profile.weight} suffix="kg" disabled={!editingProfile} onChange={v=>setProfile(p=>({...p,weight:+v}))}/><NumberField label="Target weight" value={profile.targetWeight} suffix="kg" disabled={!editingProfile} onChange={v=>setProfile(p=>({...p,targetWeight:+v}))}/><label className="number-field"><span>Sex for calorie & reference estimates</span><select value={profile.sex||'male'} disabled={!editingProfile} onChange={e=>setProfile(p=>({...p,sex:e.target.value}))}><option value="male">Male</option><option value="female">Female</option></select></label><label className="number-field"><span>Work category for fibre reference</span><select value={profile.workCategory||'sedentary'} disabled={!editingProfile} onChange={e=>setProfile(p=>({...p,workCategory:e.target.value}))}><option value="sedentary">Sedentary work</option><option value="moderate">Moderate work</option><option value="heavy">Heavy work</option></select></label></div><CountryField value={profile.countryCode||DEFAULT_COUNTRY_CODE} disabled={!editingProfile} onChange={countryCode=>setProfile(p=>({...p,countryCode}))}/>{editingProfile&&<button className="primary-btn" onClick={saveProfile}>Save profile</button>}<div className="form-divider"/><label className="field-label">YOUR OBJECTIVE</label><div className="goal-options">{[['lose','Lose weight',ArrowDownRight],['maintain','Maintain',Scale],['gain','Gain weight',ArrowUpRight]].map(([v,l,I])=><button key={v} className={profile.goal===v?'chosen':''} onClick={()=>setProfile(p=>({...p,goal:v}))}><I size={18}/><b>{l}</b></button>)}</div><label className="field-label">ACTIVITY LEVEL</label><select value={profile.activity} onChange={e=>setProfile(p=>({...p,activity:e.target.value}))}><option value="sedentary">Sedentary – little or no exercise</option><option value="light">Light – exercise 1–3 days/week</option><option value="moderate">Moderate – exercise 3–5 days/week</option><option value="high">Very active – hard exercise most days</option></select>{profile.goal!=='maintain'&&<><label className="field-label">DESIRED WEEKLY CHANGE</label><div className="pace-options">{[0.25,0.5,0.75].map(v=><button key={v} className={profile.pace===v?'chosen':''} onClick={()=>setProfile(p=>({...p,pace:v}))}><b>{v} kg</b><small>per week</small></button>)}</div></>}<div className="form-divider"/><label className="field-label">WEIGHT CHECK-IN</label><div className="weight-entry"><input type="number" step="0.1" placeholder="Today's weight in kg" value={weightInput} onChange={e=>setWeightInput(e.target.value)}/><button className="secondary-btn" onClick={saveWeight}>Save weight</button></div></div><div className="goals-side"><div className="card target-card"><div className="metric-icon green"><Target size={18}/></div><span>ESTIMATED DAILY CALORIE TARGET</span><strong>{fmt(targets.calories)}</strong><small>kcal per day</small><div className="target-row"><span>Estimated BMR</span><b>{fmt(targets.bmr)} kcal</b></div><div className="target-row"><span>Estimated TDEE</span><b>{fmt(targets.tdee)} kcal</b></div><div className="target-row"><span>Goal adjustment</span><b>{profile.goal==='maintain'?'0':`${profile.goal==='lose'?'−':'+'}${fmt(profile.pace*7700/7)} kcal`}</b></div></div><div className="card macro-target-card"><h3>Suggested macro targets</h3><p>Starting estimates to support your goal.</p>{[['Protein',targets.protein,'blue'],['Carbohydrates',targets.carbs,'yellow'],['Fat',targets.fat,'purple']].map(([n,v,c])=><div className="target-row" key={n}><span><i className={`dot ${c}`}/>{n}</span><b>{v} g</b></div>)}</div><div className="safety-note"><ShieldCheck size={17}/><p>These are estimates, not medical advice. Actual needs vary. Avoid aggressive weight changes and consult a qualified professional if you have medical or dietary concerns.</p></div></div></div></>}
 
         {page==='Billing'&&<><div className="page-intro"><h2>Choose your NutriTrack plan</h2><p>Start with a card-authorized three-day trial. Your selected plan begins billing after the trial.</p></div>
           <div className="card settings-card billing-status"><div className="settings-title"><div className="settings-icon"><Wallet size={19}/></div><div><h3>Current access</h3><p>{access?.status === 'trialing' ? 'Your three-day trial is active.' : access?.status === 'active' ? 'Your subscription is active.' : 'You are currently using demo access.'}</p></div><span className="quality-pill good">{access?.status || 'Loading'}</span></div>
@@ -495,17 +944,18 @@ function App(){
           </div>
           <div className="card settings-card"><div className="settings-title"><div className="settings-icon gemini"><Sparkles size={19}/></div><div><h3>NutriTrack AI</h3><p>Managed Gemini service for meal analysis.</p></div><span className="connected-dot"/></div><div className="field-help">AI requests are securely sent through NutriTrack's server. Your API key is never stored in this browser.</div><label className="field-label">GEMINI MODEL</label><select value={model} onChange={e=>{setModel(e.target.value);}}><option value="gemini-3.5-flash-lite">Gemini 3.5 Flash-Lite · lower cost</option><option value="gemini-3.8-flash">Gemini 3.8 Flash</option></select><div className="settings-actions"><button className="secondary-btn" onClick={testConnection} disabled={busy||!authUser}>{busy?<LoaderCircle className="spin" size={15}/>:<Zap size={15}/>} Test AI service</button></div>{!authUser&&<div className="field-help">Sign in with Google in the Account & cloud sync section to use AI.</div>}{error&&<div className="error-box">{error}</div>}</div>
           <div className="card settings-card"><div className="settings-title"><div className="settings-icon"><Wallet size={19}/></div><div><h3>Data & backups</h3><p>Your meals and profile are stored in your cloud account.</p></div></div><div className="storage-info"><div><b>{meals.length}</b><small>Meals stored</small></div><div><b>{weights.length}</b><small>Weight entries</small></div><div><b>{authUser ? (syncStatus === 'error' ? 'Issue' : 'Cloud') : 'Local'}</b><small>Storage mode</small></div></div><button className="backup-action" onClick={exportData}><CloudDownload size={17}/><div><b>Export backup</b><small>Download profile, meals and weight history as JSON</small></div><ChevronRight size={16}/></button><label className="backup-action import-label"><CloudDownload size={17}/><div><b>Import backup</b><small>Restore from a NutriTrack JSON backup</small></div><ChevronRight size={16}/><input type="file" accept="application/json,.json" onChange={importData}/></label><div className="field-help">Import replaces your account profile and history. Export backups regularly.</div></div>
-          <div className="card settings-card"><div className="settings-title"><div className="settings-icon"><ShieldCheck size={19}/></div><div><h3>Privacy & security</h3><p>Understand where your information goes.</p></div></div><div className="privacy-list"><p><Check size={15}/> Meal history and goals are stored in your authenticated cloud account.</p><p><Check size={15}/> Only meal prompts are sent to Gemini when you request analysis.</p><p><Check size={15}/> An account is required to access NutriTrack AI.</p><p><Check size={15}/> Gemini credentials are kept on the server and are not exposed in the browser.</p></div><button className="secondary-btn" onClick={handleRevokeSessions} disabled={sessionRevokeBusy||accountDeleteBusy}>{sessionRevokeBusy?<LoaderCircle className="spin" size={15}/>:<LogOut size={15}/>} {sessionRevokeBusy?'Signing out everywhere…':'Sign out on all devices'}</button>{sessionRevokeError&&<div className="error-box">{sessionRevokeError}</div>}<button className="danger-btn" onClick={handleDeleteAccount} disabled={accountDeleteBusy}>{accountDeleteBusy?<LoaderCircle className="spin" size={15}/>:<Trash2 size={15}/>} {accountDeleteBusy?'Deleting account…':'Delete account permanently'}</button>{accountDeleteError&&<div className="error-box">{accountDeleteError}</div>}<div className="field-help">Permanently deletes your sign-in, cloud data and usage records. Any Razorpay subscription is cancelled immediately before deletion.</div></div></div></>}
+          <div className="card settings-card"><div className="settings-title"><div className="settings-icon"><ShieldCheck size={19}/></div><div><h3>Privacy & security</h3><p>Understand where your information goes.</p></div></div><div className="privacy-list"><p><Check size={15}/> Meal history and goals are stored in your authenticated cloud account.</p><p><Check size={15}/> Meal descriptions and selected photos are sent to Gemini only when you request analysis; original photos are not retained.</p><p><Check size={15}/> Barcode lookups query Open Food Facts. Product records are community-contributed and should be checked against the package label.</p><p><Check size={15}/> Nutrition values are marked as AI estimates, sourced catalogue values or unavailable; missing values are never assumed to be zero.</p><p><Check size={15}/> An account is required to access NutriTrack AI.</p><p><Check size={15}/> Gemini credentials are kept on the server and are not exposed in the browser.</p></div><button className="secondary-btn" onClick={handleRevokeSessions} disabled={sessionRevokeBusy||accountDeleteBusy}>{sessionRevokeBusy?<LoaderCircle className="spin" size={15}/>:<LogOut size={15}/>} {sessionRevokeBusy?'Signing out everywhere…':'Sign out on all devices'}</button>{sessionRevokeError&&<div className="error-box">{sessionRevokeError}</div>}<button className="danger-btn" onClick={handleDeleteAccount} disabled={accountDeleteBusy}>{accountDeleteBusy?<LoaderCircle className="spin" size={15}/>:<Trash2 size={15}/>} {accountDeleteBusy?'Deleting account…':'Delete account permanently'}</button>{accountDeleteError&&<div className="error-box">{accountDeleteError}</div>}<div className="field-help">Permanently deletes your sign-in, cloud data and usage records. Any Razorpay subscription is cancelled immediately before deletion.</div></div></div></>}
       </div>
       <footer className="footer"><span>© {new Date().getFullYear()} NutriTrack AI</span><span>Made for mindful everyday nutrition <HeartPulse size={13}/></span></footer>
     </main>
-    {showSetup&&<div className="modal-backdrop"><div className="setup-modal"><div className="setup-brand"><div className="brand-mark"><Apple size={22}/></div><span>NutriTrack <b>AI</b></span></div><div className="setup-step">WELCOME · QUICK SETUP</div><h2>Your nutrition journey starts here.</h2><p>Set up your profile and connect Gemini when you're ready to log your first meal.</p><div className="setup-fields"><NumberField label="Age" value={profile.age} suffix="years" onChange={v=>setProfile(p=>({...p,age:+v}))}/><NumberField label="Height" value={profile.height} suffix="cm" onChange={v=>setProfile(p=>({...p,height:+v}))}/><NumberField label="Current weight" value={profile.weight} suffix="kg" onChange={v=>setProfile(p=>({...p,weight:+v}))}/><NumberField label="Target weight" value={profile.targetWeight} suffix="kg" onChange={v=>setProfile(p=>({...p,targetWeight:+v}))}/></div><label className="field-label">YOUR PRIMARY GOAL</label><div className="goal-options setup-goals">{[['lose','Lose weight',ArrowDownRight],['maintain','Maintain',Scale],['gain','Gain weight',ArrowUpRight]].map(([v,l,I])=><button key={v} className={profile.goal===v?'chosen':''} onClick={()=>setProfile(p=>({...p,goal:v}))}><I size={17}/><b>{l}</b></button>)}</div><button className="primary-btn full-btn" onClick={()=>{setShowSetup(false);setPage('Settings');}}>Continue to AI setup <ChevronRight size={16}/></button><button className="skip-btn" onClick={()=>{setShowSetup(false);}}>I'll configure this later</button><small className="setup-foot">You can change all of these details later in Goals and Settings.</small></div></div>}
+    {showSetup&&<div className="modal-backdrop"><div className="setup-modal"><div className="setup-brand"><div className="brand-mark"><Apple size={22}/></div><span>NutriTrack <b>AI</b></span></div><div className="setup-step">WELCOME · QUICK SETUP</div><h2>Your nutrition journey starts here.</h2><p>Set your country and profile details so food names and nutrition references use the right context. You can log by text, photos or packaged-food barcode. AI values are estimates; catalogue values are source-attributed and should be checked against the package.</p><div className="setup-fields"><NumberField label="Age" value={profile.age} suffix="years" onChange={v=>setProfile(p=>({...p,age:+v}))}/><NumberField label="Height" value={profile.height} suffix="cm" onChange={v=>setProfile(p=>({...p,height:+v}))}/><NumberField label="Current weight" value={profile.weight} suffix="kg" onChange={v=>setProfile(p=>({...p,weight:+v}))}/><NumberField label="Target weight" value={profile.targetWeight} suffix="kg" onChange={v=>setProfile(p=>({...p,targetWeight:+v}))}/><label className="number-field"><span>Sex for calorie & reference estimates</span><select value={profile.sex||'male'} onChange={e=>setProfile(p=>({...p,sex:e.target.value}))}><option value="male">Male</option><option value="female">Female</option></select></label><label className="number-field"><span>Work category for fibre reference</span><select value={profile.workCategory||'sedentary'} onChange={e=>setProfile(p=>({...p,workCategory:e.target.value}))}><option value="sedentary">Sedentary work</option><option value="moderate">Moderate work</option><option value="heavy">Heavy work</option></select></label></div><CountryField value={profile.countryCode||DEFAULT_COUNTRY_CODE} onChange={countryCode=>setProfile(p=>({...p,countryCode}))}/><label className="field-label">YOUR PRIMARY GOAL</label><div className="goal-options setup-goals">{[['lose','Lose weight',ArrowDownRight],['maintain','Maintain',Scale],['gain','Gain weight',ArrowUpRight]].map(([v,l,I])=><button key={v} className={profile.goal===v?'chosen':''} onClick={()=>setProfile(p=>({...p,goal:v}))}><I size={17}/><b>{l}</b></button>)}</div><button className="primary-btn full-btn" onClick={()=>{setShowSetup(false);setPage('Settings');}}>Continue to AI setup <ChevronRight size={16}/></button><button className="skip-btn" onClick={()=>{setShowSetup(false);}}>I'll configure this later</button><small className="setup-foot">You can change all of these details later in Goals and Settings.</small></div></div>}
     {notice&&<div className="toast"><Check size={16}/>{notice}</div>}
   </div>;
 }
-function MealRow({meal,onDelete,showDate=false}){const Icon=meal.category==='Breakfast'?Coffee:meal.category==='Snack'?Apple:Utensils;return <div className="meal-row"><div className="meal-type-icon"><Icon size={18}/></div><div className="meal-info"><b>{meal.name}</b><small>{showDate?new Date(meal.date+'T00:00:00').toLocaleDateString('en',{month:'short',day:'numeric'})+' · ':''}{meal.category} · {meal.time}</small></div><div className="meal-macros"><b>{fmt(meal.calories)} kcal</b><small>{fmt(meal.protein)}g protein · {fmt(meal.carbs)}g carbs</small></div><span className={`quality-pill ${meal.quality==='Good'?'good':''}`}>{meal.quality||'Logged'}</span><button className="icon-btn delete-btn" title="Delete meal" onClick={()=>onDelete(meal.id)}><Trash2 size={15}/></button></div>}
+function MealRow({meal,onDelete,showDate=false,onSelect}){const Icon=meal.category==='Breakfast'?Coffee:meal.category==='Snack'?Apple:Utensils;return <div className="meal-row"><div className="meal-type-icon"><Icon size={18}/></div><button type="button" className="meal-info meal-open" onClick={()=>onSelect?.(meal.id)}><b>{meal.name}</b><small>{showDate?new Date(meal.date+'T00:00:00').toLocaleDateString('en',{month:'short',day:'numeric'})+' · ':''}{meal.category} · {meal.time}</small></button><div className="meal-macros"><b>{meal.calories==null?'—':fmt(meal.calories)+' kcal'}</b><small>{meal.protein==null?'—':fmt(meal.protein)+'g'} protein · {meal.carbs==null?'—':fmt(meal.carbs)+'g'} carbs</small></div><span className={`quality-pill ${meal.quality==='Good'?'good':''}`}>{meal.quality||'Logged'}</span><button className="icon-btn delete-btn" title="Delete meal" onClick={()=>onDelete(meal.id)}><Trash2 size={15}/></button></div>}
 function EmptyState({icon:Icon,title,desc,action,onClick}){return <div className="empty-state"><div><Icon size={22}/></div><b>{title}</b><p>{desc}</p>{action&&<button className="secondary-btn" onClick={onClick}>{action}</button>}</div>}
 function StatCard({icon:Icon,label,value,sub,color}){return <div className="card stat-card"><div className="card-head"><span>{label}</span><div className={`metric-icon ${color}`}><Icon size={17}/></div></div><strong>{value}</strong><small>{sub}</small></div>}
+function CountryField({value,onChange,disabled=false}){return <label className="country-field"><span className="field-label">COUNTRY / FOOD MARKET</span><select value={value||DEFAULT_COUNTRY_CODE} onChange={e=>onChange(e.target.value)} disabled={disabled}><option value="">Choose your country</option>{COUNTRIES.map(country=><option key={country.code} value={country.code}>{country.name}</option>)}</select><small>Used to interpret local food names and product markets. You can change this later.</small></label>}
 function NumberField({label,value,suffix,disabled=false,onChange}){return <label className="number-field"><span>{label}</span><div><input type="number" value={value} disabled={disabled} onChange={e=>onChange(e.target.value)}/><small>{suffix}</small></div></label>}
 
 createRoot(document.getElementById('root')).render(<App/>);

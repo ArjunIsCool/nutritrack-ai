@@ -1,4 +1,6 @@
 import { createRemoteJWKSet, jwtVerify } from "jose";
+import { validateImageAttachments } from "./imageValidation.js";
+import { normalizeOpenFoodFactsProduct, normalizeRetailBarcode, normalizeUsdaFood } from "./barcode.js";
 
 const FIREBASE_JWKS = createRemoteJWKSet(
   new URL("https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com")
@@ -36,8 +38,28 @@ async function authenticate(request, projectId) {
   return { uid: payload.sub, authTime: Number(payload.auth_time) };
 }
 
-function makeMealPrompt(prompt, category) {
-  return `You are a careful nutrition estimation assistant for an Indian user. Analyze this meal: "${prompt.replace(/"/g, '\\"')}". Meal category selected: ${category}. Return ONLY valid JSON with this exact structure: {"meal_name":"short title","items":[{"name":"food and portion","calories":0,"protein":0,"carbs":0,"fat":0,"fiber":0,"sugar":0}],"totals":{"calories":0,"protein":0,"carbs":0,"fat":0,"fiber":0,"sugar":0},"quality":"Good|Moderate|Occasional","assessment":"2-3 concise sentences","assumptions":["portion assumptions"],"needs_clarification":false,"clarifying_question":""}. Use realistic estimates, metric quantities, and account for cooking oil where possible. Values must be numbers. Do not claim exactness. If portion ambiguity materially changes the estimate, set needs_clarification true and ask one concise question; still provide a provisional estimate. Do not give medical diagnoses.`;
+const NUTRIENT_KEYS = [
+  "energy_kcal", "protein_g", "carbohydrate_g", "total_fat_g", "saturated_fat_g",
+  "trans_fat_g", "monounsaturated_fat_g", "polyunsaturated_fat_g", "cholesterol_mg",
+  "fiber_g", "total_sugars_g", "added_sugars_g", "sodium_mg", "potassium_mg",
+  "calcium_mg", "iron_mg", "magnesium_mg", "zinc_mg", "phosphorus_mg", "choline_mg",
+  "selenium_ug", "copper_mg", "manganese_mg", "iodine_ug", "vitamin_a_ug_rae",
+  "vitamin_c_mg", "vitamin_d_ug", "vitamin_e_mg", "vitamin_k_ug", "vitamin_b1_mg",
+  "vitamin_b2_mg", "vitamin_b3_mg", "vitamin_b5_mg", "vitamin_b6_mg", "vitamin_b7_ug",
+  "vitamin_b9_ug_dfe", "vitamin_b12_ug", "water_g", "caffeine_mg", "alcohol_g"
+];
+
+function makeMealPrompt(prompt, category, countryCode) {
+  const country = String(countryCode || "IN").toUpperCase();
+  const nutrientTemplate = Object.fromEntries(NUTRIENT_KEYS.map((key) => [key, null]));
+  const schema = JSON.stringify(nutrientTemplate);
+  return [
+    "You are a careful, globally aware nutrition estimation assistant. The user selected country / food market ISO code " + country + ". Use it only to interpret local food names, common recipes, labels, and market context. Do not assume the user eats a particular cuisine.",
+    "Analyze the meal described and/or shown in the attached photos. Text description: " + JSON.stringify(prompt) + ". Meal category: " + category + ".",
+    "Return ONLY valid JSON with meal_name, items, totals, quality, assessment, assumptions, needs_clarification, and clarifying_question. Each item and totals must contain legacy numeric fields calories, protein, carbs, fat, fiber, sugar plus a nutrients object with exactly these keys: " + schema,
+    "Estimate nutrients for the stated item portion and whole-meal total respectively. Use null when unknown or not responsibly estimable; never invent a value and never use zero to mean unknown. Units are encoded in keys: kcal for energy; g for protein/carbohydrate/fats/fibre/sugars/water; mg for cholesterol, sodium, potassium, calcium, iron, magnesium, zinc, phosphorus, copper, manganese, vitamins C/E/B1/B2/B3/B5/B6 and choline; mg for caffeine; g for alcohol; µg for selenium, iodine, vitamins A/D/K/B7/B9/B12.",
+    "Use metric portions, realistic recipe estimates, and account for cooking oil where possible. Do not claim exactness or clinical precision. If portion ambiguity materially changes the estimate, set needs_clarification true and ask one concise question while still providing a provisional estimate. Do not provide diagnoses."
+  ].join("\n");
 }
 
 async function getUsage(db, userId, now = Date.now()) {
@@ -344,14 +366,17 @@ async function verifySubscriptionCheckoutSignature(paymentId, subscriptionId, si
   return diff === 0;
 }
 
-async function callGemini(env, model, prompt, test = false) {
+async function callGemini(env, model, prompt, test = false, imageAttachments = []) {
+  const parts = [{ text: prompt }, ...imageAttachments.map((image) => ({
+    inlineData: { mimeType: image.mimeType, data: image.data }
+  }))];
   const response = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(env.GEMINI_API_KEY)}`,
     {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
+        contents: [{ parts }],
         generationConfig: test
           ? { temperature: 0 }
           : { temperature: 0.2, responseMimeType: "application/json" },
@@ -395,7 +420,7 @@ export default {
       return json({ ok: true, confirmed: true, revokedAfter: Number(stored.revoked_after) });
     }
     if (url.pathname === "/api/razorpay-webhook" && request.method === "POST") return handleRazorpayWebhook(request, env);
-    const allowedPaths = ["/api/meal-analysis", "/api/demo-analysis", "/api/ai-status", "/api/usage", "/api/access", "/api/create-subscription", "/api/verify-subscription", "/api/cancel-subscription", "/api/abandon-subscription", "/api/delete-account-data"];
+    const allowedPaths = ["/api/meal-analysis", "/api/demo-analysis", "/api/ai-status", "/api/usage", "/api/access", "/api/barcode-lookup", "/api/create-subscription", "/api/verify-subscription", "/api/cancel-subscription", "/api/abandon-subscription", "/api/delete-account-data"];
     if (request.method !== "POST" || !allowedPaths.includes(url.pathname)) {
       return json({ error: "Not found." }, 404);
     }
@@ -420,6 +445,72 @@ export default {
       const revocation = await env.DB.prepare("SELECT revoked_after FROM session_revocations WHERE user_id = ?").bind(userId).first();
       if (revocation && identity.authTime < Number(revocation.revoked_after)) return json({ error: "Your session was signed out from another device. Please sign in again.", code: "SESSION_REVOKED" }, 401);
     } catch { return json({ error: "Account security checks are temporarily unavailable. Please try again." }, 503); }
+
+    if (url.pathname === "/api/barcode-lookup") {
+      let body;
+      try {
+        const raw = await request.text();
+        if (raw.length > 2048) return json({ error: "Barcode lookup request is too large." }, 413);
+        body = JSON.parse(raw);
+      } catch { return json({ error: "Invalid barcode lookup request." }, 400); }
+      if (!body || typeof body !== "object" || Array.isArray(body)) return json({ error: "Invalid barcode lookup request." }, 400);
+      const barcode = normalizeRetailBarcode(body.barcode);
+      if (!barcode) return json({ error: "Enter a valid UPC-A, EAN-8, EAN-13 or GTIN-14 barcode." }, 400);
+      try {
+        const fields = "code,status,product_name,product_name_en,brands,quantity,categories,countries_tags,image_front_small_url,nutriments";
+        const countryCode = typeof body.countryCode === "string" && /^[A-Za-z]{2}$/.test(body.countryCode) ? body.countryCode.toUpperCase() : "IN";
+      if (countryCode === "US" && env.FDC_API_KEY) {
+        try {
+          const apiKey = encodeURIComponent(env.FDC_API_KEY);
+          const searchResponse = await fetch("https://api.nal.usda.gov/fdc/v1/foods/search?api_key=" + apiKey, {
+            method: "POST",
+            headers: { "content-type": "application/json", "accept": "application/json" },
+            body: JSON.stringify({ query: barcode, dataType: ["Branded"], pageSize: 10 }),
+            signal: AbortSignal.timeout(9000)
+          });
+          if (searchResponse.ok) {
+            const searchData = await searchResponse.json();
+            const canonical = value => String(value || "").replace(/\D/g, "").replace(/^0+/, "");
+            const matches = (Array.isArray(searchData.foods) ? searchData.foods : [])
+              .filter(item => canonical(item.gtinUpc) === canonical(barcode))
+              .sort((a, b) => Date.parse(b.publicationDate || b.modifiedDate || "") - Date.parse(a.publicationDate || a.modifiedDate || ""));
+            if (matches.length) {
+              const fdcId = Number(matches[0].fdcId);
+              if (Number.isInteger(fdcId) && fdcId > 0) {
+                const detailResponse = await fetch("https://api.nal.usda.gov/fdc/v1/food/" + fdcId + "?api_key=" + apiKey, {
+                  headers: { "accept": "application/json" },
+                  signal: AbortSignal.timeout(9000)
+                });
+                if (detailResponse.ok) {
+                  const food = await detailResponse.json();
+                  const product = normalizeUsdaFood(food, barcode);
+                  if (product && Number.isFinite(product.nutrients.energy_kcal)) {
+                    product.sourceRecordDate = food.publicationDate || food.modifiedDate || matches[0].publicationDate || null;
+                    return json({ ok: true, product });
+                  }
+                }
+              }
+            }
+          }
+        } catch (error) {
+          console.warn("USDA barcode lookup unavailable; falling back to Open Food Facts", { message: error?.message || "unknown" });
+        }
+      }
+        const upstream = await fetch("https://world.openfoodfacts.org/api/v3/product/" + encodeURIComponent(barcode) + "?cc=" + countryCode.toLowerCase() + "&fields=" + fields, {
+          headers: { "accept": "application/json", "user-agent": "NutriTrackAI/1.0 (https://github.com/ArjunIsCool/nutritrack-ai)" },
+          signal: AbortSignal.timeout(9000)
+        });
+        if (!upstream.ok) return json({ error: "The product catalogue is temporarily unavailable. Try again later." }, 502);
+        const data = await upstream.json();
+        if (!["success", "success_with_warnings"].includes(data?.status) || !data.product) return json({ error: "No product was found for this barcode. You can still log the food manually." }, 404);
+        const product = normalizeOpenFoodFactsProduct(data.product, barcode);
+        if (!product) return json({ error: "A product record exists, but it has no reliable product name. Please check the barcode." }, 422);
+        return json({ ok: true, product });
+      } catch (error) {
+        console.error("Barcode catalogue lookup failed", { message: error?.message || "unknown" });
+        return json({ error: "Could not reach the product catalogue. Check your connection and try again." }, 502);
+      }
+    }
 
     if (url.pathname === "/api/create-subscription" || url.pathname === "/api/verify-subscription" || url.pathname === "/api/cancel-subscription" || url.pathname === "/api/abandon-subscription" || url.pathname === "/api/delete-account-data") {
       let body; try { body = await request.json(); } catch { return json({ error: "Invalid request body." }, 400); }
@@ -526,7 +617,7 @@ export default {
     let body;
     try {
       const raw = await request.text();
-      if (raw.length > 12000) return json({ error: "Request is too large." }, 413);
+      if (raw.length > 9_000_000) return json({ error: "The request is too large. Please use smaller photos." }, 413);
       body = JSON.parse(raw);
     } catch {
       return json({ error: "Invalid request body." }, 400);
@@ -544,8 +635,14 @@ export default {
 
     const prompt = typeof body.prompt === "string" ? body.prompt.trim() : "";
     const category = typeof body.category === "string" ? body.category.slice(0, 30) : "Meal";
-    if (!prompt || prompt.length > 4000) {
-      return json({ error: "Please enter a meal description under 4,000 characters." }, 400);
+    const countryCode = typeof body.countryCode === "string" && /^[A-Za-z]{2}$/.test(body.countryCode)
+      ? body.countryCode.toUpperCase()
+      : "IN";
+    const imageValidation = validateImageAttachments(body.imageAttachments);
+    if (!imageValidation.ok) return json({ error: imageValidation.error }, imageValidation.status);
+    const imageAttachments = imageValidation.images;
+    if ((!prompt && imageAttachments.length === 0) || prompt.length > 4000) {
+      return json({ error: "Enter a short meal description or attach at least one photo." }, 400);
     }
 
     if (url.pathname === "/api/demo-analysis") {
@@ -557,7 +654,7 @@ export default {
       try { demoReservation = await reserveDemo(env.DB, userId); }
       catch { return json({ error: "Demo usage controls are unavailable. Please try again." }, 503); }
       if (!demoReservation.allowed) return json(demoReservation, demoReservation.status);
-      const demoResult = await callGemini(env, model, makeMealPrompt(prompt, category));
+      const demoResult = await callGemini(env, model, makeMealPrompt(prompt, category, countryCode), false, imageAttachments);
       if (demoResult.error) {
         try { await refundDemo(env.DB, userId); } catch {}
         return json({ error: demoResult.error, demoUsage: await getDemoUsage(env.DB, userId) }, demoResult.status);
@@ -584,7 +681,7 @@ export default {
       }, reservation.status);
     }
 
-    const result = await callGemini(env, model, makeMealPrompt(prompt, category));
+    const result = await callGemini(env, model, makeMealPrompt(prompt, category, countryCode), false, imageAttachments);
     if (result.error) {
       try {
         await refundAnalysis(env.DB, userId);

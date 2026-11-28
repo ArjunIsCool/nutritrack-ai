@@ -3,7 +3,7 @@
 A mobile-first, installable Progressive Web App for personal calorie and nutrition tracking. It uses a Cloudflare Worker to authenticate and proxy Gemini meal-analysis requests, with mandatory Firebase Authentication and Firestore-backed account data.
 
 ## Requirements
-- Node.js 18 or newer
+- Node.js 22.12 or newer (required by the current Wrangler toolchain)
 - A Gemini API key from https://aistudio.google.com/apikey
 
 ## Account access and cloud data
@@ -30,6 +30,7 @@ Build with `npm run build`. The Cloudflare Workers deployment is configured in `
 
 ## Important security and data notes
 - Gemini requests are sent through the Cloudflare Worker. Configure `GEMINI_API_KEY` as a Worker Secret and `FIREBASE_PROJECT_ID` as a Worker variable; never put server secrets in `VITE_*` variables.
+- Optional US branded barcode enrichment uses USDA FoodData Central exact-GTIN matching. Configure a data.gov API key as a Worker Secret with `npx wrangler secret put FDC_API_KEY`. The key is never sent to the browser. When absent or no exact match is found, lookup falls back to Open Food Facts.
 - The Worker verifies Firebase ID tokens, provides five lifetime demo analyses to accounts without premium access, and enforces 20 analyses per user per UTC day and 500 per UTC month for active trial/subscription entitlements. Demo usage and subscription access are enforced in D1.
 - Razorpay Test Mode subscription checkout is implemented on the feature branch. Trial access still depends on the separately configured signed webhook secret and verified card authorization event; complete end-to-end tests before enabling Live payments.
 - Meal prompts are forwarded to Google's Gemini API when you request analysis. Saved profile and nutrition history are stored in your authenticated Firestore account.
@@ -43,7 +44,12 @@ Build with `npm run build`. The Cloudflare Workers deployment is configured in `
 - Mifflin-St Jeor BMR estimate and activity-adjusted TDEE
 - Weight loss, maintenance and gain goal modes
 - Editable profile and weekly rate settings
-- Gemini-powered natural-language meal analysis with itemized estimates
+- Country-aware Gemini text and photo meal analysis with a versioned, comprehensive nutrient estimate schema
+- UPC-A, EAN-8, EAN-13 and GTIN-14 barcode validation with live camera scanning, barcode-photo decoding, keyboard-wedge USB/Bluetooth readers, authenticated Open Food Facts v3 product lookup and sourced per-100 g nutrient snapshots
+- Daily, weekly and monthly nutrient trends that show known-value subtotals and per-period meal coverage without treating missing values as zero
+- Contextual nutrition references: WHO adult sodium upper limit, ICMR-NIN 2020 adult references for supported Indian profiles, and National Academies DRI references for supported US/Canada adult profiles
+- Up to five compressed photos per analysis, with upload/camera capture, per-photo optional captions, previews and server-side validation
+- Itemized saved analysis snapshots with nutrient provenance and a complete meal detail view
 - Meal history, daily totals and macro tracking
 - Seven-day calorie chart
 - Weight check-ins
@@ -51,7 +57,8 @@ Build with `npm run build`. The Cloudflare Workers deployment is configured in `
 - Responsive dark UI and PWA install support
 
 ## Current limitations
-- Text-based food logging only; photo and voice logging are not included in this initial build.
+- US barcode lookup prefers an exact GTIN match in USDA FoodData Central when the optional `FDC_API_KEY` Worker Secret is configured; otherwise it falls back to Open Food Facts. Other markets currently use Open Food Facts as a community-contributed secondary catalogue. It does not guarantee that a product exists or that submitted label data are correct; verify against the physical package. Live camera scanning and barcode-photo decoding use the browser camera (HTTPS/localhost and permission required) with the ZXing decoder loaded on demand from esm.sh; barcode images are decoded locally in the browser and are not uploaded for decoding; camera focus is controlled by the device and browser, with a best-effort continuous-autofocus request where exposed. The in-app webcam capture works on desktop and mobile browsers that expose `getUserMedia`; the separate Take photo file control also invokes the device camera on supported mobile browsers. USB/Bluetooth keyboard-wedge barcode readers are supported: pair/connect the reader at the operating-system level, focus the barcode input, then scan; the digits are typed into the field and the reader commonly sends Enter, which triggers lookup. If it does not send Enter, press Look up. Direct GS1/manufacturer integrations are not included. Original meal photos are processed for analysis and are not retained in saved meal records.
+- Nutrient trend subtotals are only the values available from logged meals, not proof of complete daily intake. Reference values are displayed only where a source and matching adult profile are available; they are not diagnoses or personalized medical advice.
 - The service worker caches the app shell and previously visited static assets; Gemini analysis requires an internet connection.
 - The first profile setup uses editable starter values (age 21, 175 cm, 70 kg, target 65 kg) as convenience defaults. Confirm or change them before relying on the calculated target.
 - The calculator applies a conservative minimum calorie floor of 1,500 kcal/day for this initial male-profile implementation. It is a guardrail, not a personalized clinical recommendation.

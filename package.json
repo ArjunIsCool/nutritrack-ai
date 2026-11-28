@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "node --test"
   },
   "dependencies": {
     "lucide-react": "^0.468.0",
@@ -20,5 +21,8 @@
   "devDependencies": {
     "@vitejs/plugin-react": "^4.7.0",
     "wrangler": "^4.135.0"
+  },
+  "overrides": {
+    "@grpc/grpc-js": "1.13.6"
   }
 }
