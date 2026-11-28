@@ -1,8 +1,8 @@
 const BARCODE_LENGTHS = new Set([8, 12, 13, 14]);
 
 export function normalizeRetailBarcode(input) {
-  const value = String(input ?? "").replace(/[\\s-]/g, "");
-  if (!/^\\d+$/.test(value) || !BARCODE_LENGTHS.has(value.length)) return null;
+  const value = String(input ?? "").replace(/[\s-]/g, "");
+  if (!/^\d+$/.test(value) || !BARCODE_LENGTHS.has(value.length)) return null;
   const digits = value.split("").map(Number);
   const checkDigit = digits.pop();
   let sum = 0;
