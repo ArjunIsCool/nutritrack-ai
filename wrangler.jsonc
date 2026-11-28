@@ -22,7 +22,20 @@
         "database_name": "nutritrack-ai-usage",
         "database_id": "74007f8b-3706-4bb8-993e-677db7956ff9"
       }
-    ]
+    ],
+    "observability": {
+      "enabled": true,
+      "logs": {
+        "enabled": true,
+        "invocation_logs": true,
+        "persist": true
+      },
+      "traces": {
+        "enabled": true,
+        "head_sampling_rate": 1,
+        "persist": true
+      }
+    }
   },
   "d1_databases": [
     {
@@ -33,21 +46,16 @@
     }
   ],
   "observability": {
-    "enabled": false,
-    "head_sampling_rate": 1,
+    "enabled": true,
     "logs": {
       "enabled": true,
-      "head_sampling_rate": 1,
       "invocation_logs": true,
-      "persist": false
-    },
-    "traces": {
-      "enabled": false,
-      "head_sampling_rate": 1,
       "persist": true
     },
-    "issue_detection": {
-      "enabled": false
+    "traces": {
+      "enabled": true,
+      "head_sampling_rate": 1,
+      "persist": true
     }
   }
 }
