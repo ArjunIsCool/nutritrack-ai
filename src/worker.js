@@ -1,6 +1,6 @@
 import { createRemoteJWKSet, jwtVerify } from "jose";
 import { validateImageAttachments } from "./imageValidation.js";
-import { normalizeOpenFoodFactsProduct, normalizeRetailBarcode } from "./barcode.js";
+import { normalizeOpenFoodFactsProduct, normalizeRetailBarcode, normalizeUsdaFood } from "./barcode.js";
 
 const FIREBASE_JWKS = createRemoteJWKSet(
   new URL("https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com")
@@ -458,7 +458,44 @@ export default {
       if (!barcode) return json({ error: "Enter a valid UPC-A, EAN-8, EAN-13 or GTIN-14 barcode." }, 400);
       try {
         const fields = "code,status,product_name,product_name_en,brands,quantity,categories,countries_tags,image_front_small_url,nutriments";
-        const countryCode = typeof body.countryCode === "string" && /^[A-Za-z]{2}$/.test(body.countryCode) ? body.countryCode.toLowerCase() : "world";
+        const countryCode = typeof body.countryCode === "string" && /^[A-Za-z]{2}$/.test(body.countryCode) ? body.countryCode.toUpperCase() : "IN";
+      if (countryCode === "US" && env.FDC_API_KEY) {
+        try {
+          const apiKey = encodeURIComponent(env.FDC_API_KEY);
+          const searchResponse = await fetch("https://api.nal.usda.gov/fdc/v1/foods/search?api_key=" + apiKey, {
+            method: "POST",
+            headers: { "content-type": "application/json", "accept": "application/json" },
+            body: JSON.stringify({ query: barcode, dataType: ["Branded"], pageSize: 10 }),
+            signal: AbortSignal.timeout(9000)
+          });
+          if (searchResponse.ok) {
+            const searchData = await searchResponse.json();
+            const canonical = value => String(value || "").replace(/\D/g, "").replace(/^0+/, "");
+            const matches = (Array.isArray(searchData.foods) ? searchData.foods : [])
+              .filter(item => canonical(item.gtinUpc) === canonical(barcode))
+              .sort((a, b) => Date.parse(b.publicationDate || b.modifiedDate || "") - Date.parse(a.publicationDate || a.modifiedDate || ""));
+            if (matches.length) {
+              const fdcId = Number(matches[0].fdcId);
+              if (Number.isInteger(fdcId) && fdcId > 0) {
+                const detailResponse = await fetch("https://api.nal.usda.gov/fdc/v1/food/" + fdcId + "?api_key=" + apiKey, {
+                  headers: { "accept": "application/json" },
+                  signal: AbortSignal.timeout(9000)
+                });
+                if (detailResponse.ok) {
+                  const food = await detailResponse.json();
+                  const product = normalizeUsdaFood(food, barcode);
+                  if (product) {
+                    product.sourceRecordDate = food.publicationDate || food.modifiedDate || matches[0].publicationDate || null;
+                    return json({ ok: true, product });
+                  }
+                }
+              }
+            }
+          }
+        } catch (error) {
+          console.warn("USDA barcode lookup unavailable; falling back to Open Food Facts", { message: error?.message || "unknown" });
+        }
+      }
         const upstream = await fetch("https://world.openfoodfacts.org/api/v3/product/" + encodeURIComponent(barcode) + "?cc=" + countryCode + "&fields=" + fields, {
           headers: { "accept": "application/json", "user-agent": "NutriTrackAI/1.0 (https://github.com/ArjunIsCool/nutritrack-ai)" },
           signal: AbortSignal.timeout(9000)
