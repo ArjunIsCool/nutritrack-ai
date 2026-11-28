@@ -80,12 +80,21 @@ Phase 4 turns NutriTrack AI from a calorie/macro logger into a country-aware nut
 
 ## Delivery sequence
 
-1. Inspect existing data contracts and add the country-aware profile + versioned nutrition schema foundation.
-2. Implement comprehensive text-analysis output and persist full analysis snapshots; add meal detail history.
+1. [x] Inspect existing data contracts and add the country-aware profile + versioned nutrition schema foundation.
+2. [x] Implement comprehensive text-analysis output and persist full analysis snapshots; add meal detail history.
 3. Implement photo attachments (maximum five), caption, secure validation, storage lifecycle, and image analysis.
 4. Implement barcode decoding and source adapters with provenance and ambiguity handling.
 5. Implement nutrient dashboards/trends with coverage-aware aggregation and reference targets.
 6. Complete onboarding, migration/backups, regression tests, documentation, and staged preview validation.
+
+## Progress notes
+
+- Country selection is available during first-run setup and editable under Goals; profiles are migrated with an ISO alpha-2 country code, defaulting to IN for existing records.
+- The Worker now receives country context for both demo and premium text analysis.
+- Version 1 of the nutrient schema covers 40 fields across energy, macros, fats, fibre/sugars, minerals, vitamins, water, caffeine, and alcohol.
+- AI-returned unknown values remain null and are labelled unavailable; numeric estimates carry units, serving basis, and source/status metadata.
+- Saved meals preserve the full analysis snapshot, per-item nutrient snapshots, assumptions, clarification, country, model, and analysis timestamp. Meal rows open a read-only detail view.
+- Automated Node tests were added for country options and nutrition normalization. They still need to be executed in CI/Preview validation.
 
 ## Definition of done
 
