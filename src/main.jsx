@@ -15,6 +15,7 @@ const seedProfile = { age: 21, sex: 'male', height: 175, weight: 70, targetWeigh
 const seedMeals = [];
 const read = (key, fallback) => { try { const value = localStorage.getItem(key); return value ? JSON.parse(value) : fallback; } catch { return fallback; } };
 const fmt = n => Math.round(Number(n)||0).toLocaleString('en-IN');
+const numOrNull = value => value === null || value === undefined || value === '' || !Number.isFinite(Number(value)) ? null : Number(value);
 const calcTargets = p => {
   const bmr = 10*p.weight + 6.25*p.height - 5*p.age + 5;
   const factors = { sedentary:1.2, light:1.375, moderate:1.55, high:1.725 };
@@ -398,7 +399,7 @@ function App(){
       return;
     }
     const t = draft.totals || {};
-    const meal = {id:crypto.randomUUID?.()||String(Date.now()),date:draft.date||today(),time:draft.time||'12:00',category:draft.category||'Meal',name:draft.meal_name||'Meal',items:draft.items||[],nutrition:draft.nutrition||createNutritionSnapshot({energy_kcal:t.calories,protein_g:t.protein,carbohydrate_g:t.carbs,total_fat_g:t.fat,fiber_g:t.fiber,total_sugars_g:t.sugar},{status:'estimated',source:'gemini',basis:'whole-meal'}),analysisSnapshot:{schemaVersion:1,mealName:draft.meal_name||'Meal',category:draft.category||'Meal',countryCode:draft.countryCode||profile.countryCode||DEFAULT_COUNTRY_CODE,rawPrompt:draft.rawPrompt||'',items:draft.items||[],totals:t,assumptions:draft.assumptions||[],needsClarification:Boolean(draft.needs_clarification),clarifyingQuestion:draft.clarifying_question||'',assessment:draft.assessment||'',quality:draft.quality||'Moderate',model,source:'gemini',analyzedAt:new Date().toISOString()},calories:+t.calories||0,protein:+t.protein||0,carbs:+t.carbs||0,fat:+t.fat||0,fiber:+t.fiber||0,sugar:+t.sugar||0,assessment:draft.assessment||'',quality:draft.quality||'Moderate',source:'gemini'};
+    const meal = {id:crypto.randomUUID?.()||String(Date.now()),date:draft.date||today(),time:draft.time||'12:00',category:draft.category||'Meal',name:draft.meal_name||'Meal',items:draft.items||[],nutrition:draft.nutrition||createNutritionSnapshot({energy_kcal:t.calories,protein_g:t.protein,carbohydrate_g:t.carbs,total_fat_g:t.fat,fiber_g:t.fiber,total_sugars_g:t.sugar},{status:'estimated',source:'gemini',basis:'whole-meal'}),analysisSnapshot:{schemaVersion:1,mealName:draft.meal_name||'Meal',category:draft.category||'Meal',countryCode:draft.countryCode||profile.countryCode||DEFAULT_COUNTRY_CODE,rawPrompt:draft.rawPrompt||'',items:draft.items||[],totals:t,assumptions:draft.assumptions||[],needsClarification:Boolean(draft.needs_clarification),clarifyingQuestion:draft.clarifying_question||'',assessment:draft.assessment||'',quality:draft.quality||'Moderate',model,source:'gemini',analyzedAt:new Date().toISOString()},calories:numOrNull(t.calories),protein:numOrNull(t.protein),carbs:numOrNull(t.carbs),fat:numOrNull(t.fat),fiber:numOrNull(t.fiber),sugar:numOrNull(t.sugar),assessment:draft.assessment||'',quality:draft.quality||'Moderate',source:'gemini'};
     setBusy(true);
     setError('');
     try {
