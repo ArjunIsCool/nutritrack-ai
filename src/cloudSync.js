@@ -90,5 +90,6 @@ export function deleteCloudData(uid) {
     await batch.commit();
   }
   await deleteDoc(profileDoc(uid));
+  await deleteDoc(doc(db, 'users', uid, 'private', 'session'));
   });
 }

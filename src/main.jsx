@@ -1,9 +1,10 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Activity, Apple, ArrowDownRight, ArrowUpRight, BarChart3, Bell, CalendarDays, Check, ChevronDown, ChevronRight, CircleHelp, Clock3, CloudDownload, Coffee, Flame, Gauge, HeartPulse, History, Home, Leaf, LoaderCircle, LogOut, Menu, MessageSquareText, MoreHorizontal, Plus, Scale, Settings, ShieldCheck, Sparkles, Target, Trash2, Utensils, Wallet, X, Zap } from 'lucide-react';
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { deleteUser, onAuthStateChanged, reauthenticateWithPopup, signInWithPopup, signOut } from 'firebase/auth';
-import { auth, firebaseConfigured, googleProvider } from './firebase';
+import { auth, firebaseConfigured, functions, googleProvider } from './firebase';
+import { httpsCallable } from 'firebase/functions';
 import { deleteCloudData, deleteCloudMeal, replaceCloudData, saveCloudData, subscribeCloudData } from './cloudSync';
 import './style.css';
 
@@ -58,6 +59,9 @@ function App(){
   const [billingMessage,setBillingMessage] = useState('');
   const [billingError,setBillingError] = useState('');
   const [accountDeleteBusy,setAccountDeleteBusy] = useState(false);
+  const [sessionRevokeBusy,setSessionRevokeBusy] = useState(false);
+  const [sessionRevokeError,setSessionRevokeError] = useState('');
+  const sessionRevokingRef = useRef(false);
   const [accountDeleteError,setAccountDeleteError] = useState('');
   const targets = useMemo(()=>calcTargets(profile),[profile]);
   const todayMeals = meals.filter(m=>m.date===today());
@@ -67,6 +71,7 @@ function App(){
   useEffect(() => {
     if (!firebaseConfigured || !auth) { setAuthLoading(false); return undefined; }
     return onAuthStateChanged(auth, (user) => {
+      if (user) sessionRevokingRef.current = false;
       setAuthUser(user);
       setCloudReady(false);
       setSyncStatus(user ? 'loading' : 'local');
@@ -122,7 +127,19 @@ function App(){
         if (active) { setSyncStatus('error'); setAuthError(error.message || 'Cloud sync failed. Your account data is still available.'); }
       }
     }, (error) => {
-      if (active) { setSyncStatus('error'); setAuthError(error.message || 'Cloud sync failed. Your account data is still available.'); }
+      // A permission denial means this Firebase session can no longer access
+      // its account data. Fail closed: stop rendering the app and return to sign-in.
+      if (!active || (sessionRevokingRef.current && error.code === 'permission-denied')) return;
+      setCloudReady(false);
+      setSyncStatus('error');
+      if (error.code === 'permission-denied') {
+        setAuthError('Your session is no longer authorized. Please sign in again.');
+        signOut(auth).catch((signOutError) => {
+          setAuthError(signOutError.message || 'Your session expired. Please reload and sign in again.');
+        });
+      } else {
+        setAuthError(error.message || 'Cloud sync failed. Your account data is still available.');
+      }
     });
     return () => { active = false; unsubscribe(); };
   // Initial hydration is intentionally tied to the signed-in account only.
@@ -133,8 +150,14 @@ function App(){
     const timer = setTimeout(() => {
       saveCloudData(authUser.uid, { profile, weights, meals })
         .catch((error) => {
+          setCloudReady(false);
           setSyncStatus('error');
-          setAuthError(error.message || 'Could not save to cloud. Your account data remains available.');
+          if (error.code === 'permission-denied') {
+            setAuthError('Your session is no longer authorized. Please sign in again.');
+            signOut(auth).catch(() => {});
+          } else {
+            setAuthError(error.message || 'Could not save to cloud. Your account data remains available.');
+          }
         });
     }, 900);
     return () => clearTimeout(timer);
@@ -189,6 +212,53 @@ function App(){
       setProfile(seedProfile); setMeals([]); setWeights([]); setAiUsage(null); setAccess(null); setDemoUsage(null);
       setNotice('Signed out.');
     } catch (error) { setAuthError(error.message || 'Could not sign out.'); }
+  };
+  const handleRevokeSessions = async () => {
+    if (!authUser || !auth || !functions || sessionRevokeBusy) return;
+    if (!window.confirm('Sign out NutriTrack AI on every device? You will be signed out here too and need to sign in again.')) return;
+
+    setSessionRevokeBusy(true);
+    setSessionRevokeError('');
+    sessionRevokingRef.current = true;
+
+    let revokeError = '';
+    try {
+      // The callable revokes this user's sessions; no second Google popup is needed.
+      await httpsCallable(functions, 'revokeMySessions')({});
+    } catch (error) {
+      // The server may have completed Firebase revocation before a downstream
+      // security update failed. Always try to end this browser session as well.
+      revokeError = error.message || 'The server could not confirm session revocation.';
+    }
+
+    try {
+      await signOut(auth);
+      setAuthUser(null);
+      setCloudReady(false);
+      setSyncStatus('local');
+      setProfile(seedProfile);
+      setMeals([]);
+      setWeights([]);
+      setAiUsage(null);
+      setAccess(null);
+      setDemoUsage(null);
+
+      if (revokeError) {
+        // Keep infrastructure details in Cloud Function logs. The user only
+        // needs to know that this browser is signed out and global confirmation
+        // is pending; do not expose internal Worker/D1 diagnostics in the UI.
+        setSessionRevokeError('This device has been signed out. NutriTrack could not verify that every service has completed sign-out on all devices. Please retry this action after signing in again.');
+      } else {
+        setAuthError('');
+        setNotice('You have been signed out on all devices.');
+      }
+    } catch (error) {
+      // Keep the account visible if Firebase itself could not sign out locally.
+      sessionRevokingRef.current = false;
+      setSessionRevokeError(error.message || 'Could not sign out this device. Please retry.');
+    } finally {
+      setSessionRevokeBusy(false);
+    }
   };
   const handleDeleteAccount = async () => {
     if (!authUser || !auth) return;
@@ -295,7 +365,7 @@ function App(){
   };
   const analyzeMeal = async () => {
     if(!prompt.trim()) return;
-    if(!authUser){setError('Sign in to use AI meal analysis.');return;}
+    if(!authUser || !cloudReady){setError('Your account is not connected to cloud sync. Please sign in again.');return;}
     setBusy(true);setError('');setDraft(null);
     try{
       const token=await authUser.getIdToken();
@@ -305,6 +375,12 @@ function App(){
       const data=await res.json();
       if (data?.usage) setAiUsage(data.usage);
       if (data?.demoUsage) setDemoUsage(data.demoUsage);
+      if(!res.ok && (data?.code === 'SESSION_REVOKED' || res.status === 401)) {
+        setCloudReady(false);
+        setDraft(null);
+        await signOut(auth).catch(() => {});
+        throw new Error('Your session has expired. Please sign in again.');
+      }
       if(!res.ok) {
         const retry = data?.retryAfter ? ` Try again in about ${data.retryAfter} seconds.` : '';
         throw new Error((data?.error||`Meal analysis failed (${res.status})`) + retry);
@@ -314,7 +390,34 @@ function App(){
     }catch(e){setError(e.message||'Could not analyse this meal. Please check your sign-in and connection.');}
     finally{setBusy(false);}
   };
-  const saveMeal=()=>{if(!draft)return;const t=draft.totals||{};const meal={id:crypto.randomUUID?.()||String(Date.now()),date:draft.date||today(),time:draft.time||'12:00',category:draft.category||'Meal',name:draft.meal_name||'Meal',items:draft.items||[],calories:+t.calories||0,protein:+t.protein||0,carbs:+t.carbs||0,fat:+t.fat||0,fiber:+t.fiber||0,sugar:+t.sugar||0,assessment:draft.assessment||'',quality:draft.quality||'Moderate',source:'gemini'};setMeals(prev=>[meal,...prev]);setDraft(null);setPrompt('');setPage('Dashboard');setNotice('Meal saved to today’s log.');};
+  const saveMeal = async () => {
+    if (!draft || !authUser || !cloudReady || busy) {
+      setError('Cloud sync is unavailable. Please sign in again before saving.');
+      return;
+    }
+    const t = draft.totals || {};
+    const meal = {id:crypto.randomUUID?.()||String(Date.now()),date:draft.date||today(),time:draft.time||'12:00',category:draft.category||'Meal',name:draft.meal_name||'Meal',items:draft.items||[],calories:+t.calories||0,protein:+t.protein||0,carbs:+t.carbs||0,fat:+t.fat||0,fiber:+t.fiber||0,sugar:+t.sugar||0,assessment:draft.assessment||'',quality:draft.quality||'Moderate',source:'gemini'};
+    setBusy(true);
+    setError('');
+    try {
+      // Never claim a meal was saved until Firestore confirms the write.
+      await saveCloudData(authUser.uid, {profile, weights, meals:[meal]});
+      setMeals(prev => [meal, ...prev]);
+      setDraft(null);
+      setPrompt('');
+      setPage('Dashboard');
+      setNotice('Meal saved to your cloud account.');
+    } catch (error) {
+      setSyncStatus('error');
+      setError(error.message || 'Could not save this meal to your cloud account.');
+      if (error.code === 'permission-denied') {
+        setCloudReady(false);
+        await signOut(auth).catch(() => {});
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
   const removeMeal=id=>{setMeals(m=>m.filter(x=>x.id!==id));if(authUser&&cloudReady)deleteCloudMeal(authUser.uid,id).catch(error=>{setSyncStatus('error');setAuthError(error.message||'Could not delete this meal from the cloud.');});setNotice('Meal deleted.');};
   const saveProfile=()=>{setEditingProfile(false);setNotice('Your goals have been updated.');};
   const saveWeight=()=>{const n=Number(weightInput);if(!n||n<25||n>350)return;setWeights(w=>[{date:today(),weight:n},...w.filter(x=>x.date!==today())]);setProfile(p=>({...p,weight:n}));setWeightInput('');setNotice('Weight entry saved.');};
@@ -337,7 +440,7 @@ function App(){
   const displayMeals=showAll?meals:meals.slice(0,5);
   if (authLoading) return <div className="auth-gate"><div className="auth-gate-card"><div className="brand-mark"><Apple size={23}/></div><h1>NutriTrack <span>AI</span></h1><p>Checking your account…</p><LoaderCircle className="spin" size={22}/></div></div>;
   if (authUser && !cloudReady && !accountDeleteError) return <div className="auth-gate"><div className="auth-gate-card"><div className="brand-mark"><Apple size={23}/></div><h1>NutriTrack <span>AI</span></h1>{syncStatus === 'error' ? <><p>We couldn't load your account data. Your account has not been switched to local storage.</p><div className="error-box">{authError || 'Cloud data could not be loaded.'}</div><button className="secondary-btn" onClick={()=>window.location.reload()}>Retry</button></> : <><p>Loading your secure account data…</p><LoaderCircle className="spin" size={22}/></>}</div></div>;
-  if (!authUser) return <div className="auth-gate"><div className="auth-gate-card"><div className="brand-mark"><Apple size={23}/></div><div className="setup-step">YOUR DAILY NUTRITION COMPANION</div><h1>NutriTrack <span>AI</span></h1><p>Create an account or sign in to securely save your nutrition profile, meals and progress across devices.</p>{authError&&<div className="error-box">{authError}</div>}<button className="primary-btn full-btn" onClick={handleGoogleSignIn} disabled={authLoading||!firebaseConfigured}>{authLoading?<LoaderCircle className="spin" size={17}/>:<ShieldCheck size={17}/>} Continue with Google</button>{!firebaseConfigured&&<small>Sign-in is temporarily unavailable while account services are configured.</small>}<div className="auth-benefits"><span><Check size={14}/> Five free AI demo analyses</span><span><Check size={14}/> Your data saved to your account</span><span><Check size={14}/> Optional three-day premium trial</span></div></div></div>;
+  if (!authUser) return <div className="auth-gate"><div className="auth-gate-card"><div className="brand-mark"><Apple size={23}/></div><div className="setup-step">YOUR DAILY NUTRITION COMPANION</div><h1>NutriTrack <span>AI</span></h1><p>Create an account or sign in to securely save your nutrition profile, meals and progress across devices.</p>{(authError || sessionRevokeError)&&<div className="error-box">{sessionRevokeError || authError}</div>}<button className="primary-btn full-btn" onClick={handleGoogleSignIn} disabled={authLoading||!firebaseConfigured}>{authLoading?<LoaderCircle className="spin" size={17}/>:<ShieldCheck size={17}/>} Continue with Google</button>{!firebaseConfigured&&<small>Sign-in is temporarily unavailable while account services are configured.</small>}<div className="auth-benefits"><span><Check size={14}/> Five free AI demo analyses</span><span><Check size={14}/> Your data saved to your account</span><span><Check size={14}/> Optional three-day premium trial</span></div></div></div>;
   return <div className="app-shell">
     <aside className={`sidebar ${mobileNav?'open':''}`}>
       <div className="brand"><div className="brand-mark"><Apple size={21}/></div><div><strong>NutriTrack <span>AI</span></strong><small>YOUR DAILY NUTRITION</small></div><button className="mobile-close icon-btn" onClick={()=>setMobileNav(false)}><X size={18}/></button></div>
@@ -392,7 +495,7 @@ function App(){
           </div>
           <div className="card settings-card"><div className="settings-title"><div className="settings-icon gemini"><Sparkles size={19}/></div><div><h3>NutriTrack AI</h3><p>Managed Gemini service for meal analysis.</p></div><span className="connected-dot"/></div><div className="field-help">AI requests are securely sent through NutriTrack's server. Your API key is never stored in this browser.</div><label className="field-label">GEMINI MODEL</label><select value={model} onChange={e=>{setModel(e.target.value);}}><option value="gemini-3.5-flash-lite">Gemini 3.5 Flash-Lite · lower cost</option><option value="gemini-3.8-flash">Gemini 3.8 Flash</option></select><div className="settings-actions"><button className="secondary-btn" onClick={testConnection} disabled={busy||!authUser}>{busy?<LoaderCircle className="spin" size={15}/>:<Zap size={15}/>} Test AI service</button></div>{!authUser&&<div className="field-help">Sign in with Google in the Account & cloud sync section to use AI.</div>}{error&&<div className="error-box">{error}</div>}</div>
           <div className="card settings-card"><div className="settings-title"><div className="settings-icon"><Wallet size={19}/></div><div><h3>Data & backups</h3><p>Your meals and profile are stored in your cloud account.</p></div></div><div className="storage-info"><div><b>{meals.length}</b><small>Meals stored</small></div><div><b>{weights.length}</b><small>Weight entries</small></div><div><b>{authUser ? (syncStatus === 'error' ? 'Issue' : 'Cloud') : 'Local'}</b><small>Storage mode</small></div></div><button className="backup-action" onClick={exportData}><CloudDownload size={17}/><div><b>Export backup</b><small>Download profile, meals and weight history as JSON</small></div><ChevronRight size={16}/></button><label className="backup-action import-label"><CloudDownload size={17}/><div><b>Import backup</b><small>Restore from a NutriTrack JSON backup</small></div><ChevronRight size={16}/><input type="file" accept="application/json,.json" onChange={importData}/></label><div className="field-help">Import replaces your account profile and history. Export backups regularly.</div></div>
-          <div className="card settings-card"><div className="settings-title"><div className="settings-icon"><ShieldCheck size={19}/></div><div><h3>Privacy & security</h3><p>Understand where your information goes.</p></div></div><div className="privacy-list"><p><Check size={15}/> Meal history and goals are stored in your authenticated cloud account.</p><p><Check size={15}/> Only meal prompts are sent to Gemini when you request analysis.</p><p><Check size={15}/> An account is required to access NutriTrack AI.</p><p><Check size={15}/> Gemini credentials are kept on the server and are not exposed in the browser.</p></div><button className="danger-btn" onClick={handleDeleteAccount} disabled={accountDeleteBusy}>{accountDeleteBusy?<LoaderCircle className="spin" size={15}/>:<Trash2 size={15}/>} {accountDeleteBusy?'Deleting account…':'Delete account permanently'}</button>{accountDeleteError&&<div className="error-box">{accountDeleteError}</div>}<div className="field-help">Permanently deletes your sign-in, cloud data and usage records. Any Razorpay subscription is cancelled immediately before deletion.</div></div></div></>}
+          <div className="card settings-card"><div className="settings-title"><div className="settings-icon"><ShieldCheck size={19}/></div><div><h3>Privacy & security</h3><p>Understand where your information goes.</p></div></div><div className="privacy-list"><p><Check size={15}/> Meal history and goals are stored in your authenticated cloud account.</p><p><Check size={15}/> Only meal prompts are sent to Gemini when you request analysis.</p><p><Check size={15}/> An account is required to access NutriTrack AI.</p><p><Check size={15}/> Gemini credentials are kept on the server and are not exposed in the browser.</p></div><button className="secondary-btn" onClick={handleRevokeSessions} disabled={sessionRevokeBusy||accountDeleteBusy}>{sessionRevokeBusy?<LoaderCircle className="spin" size={15}/>:<LogOut size={15}/>} {sessionRevokeBusy?'Signing out everywhere…':'Sign out on all devices'}</button>{sessionRevokeError&&<div className="error-box">{sessionRevokeError}</div>}<button className="danger-btn" onClick={handleDeleteAccount} disabled={accountDeleteBusy}>{accountDeleteBusy?<LoaderCircle className="spin" size={15}/>:<Trash2 size={15}/>} {accountDeleteBusy?'Deleting account…':'Delete account permanently'}</button>{accountDeleteError&&<div className="error-box">{accountDeleteError}</div>}<div className="field-help">Permanently deletes your sign-in, cloud data and usage records. Any Razorpay subscription is cancelled immediately before deletion.</div></div></div></>}
       </div>
       <footer className="footer"><span>© {new Date().getFullYear()} NutriTrack AI</span><span>Made for mindful everyday nutrition <HeartPulse size={13}/></span></footer>
     </main>

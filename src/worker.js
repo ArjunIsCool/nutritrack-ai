@@ -32,10 +32,8 @@ async function authenticate(request, projectId) {
     audience: projectId,
     algorithms: ["RS256"],
   });
-  if (!payload.sub || typeof payload.sub !== "string") {
-    throw new Error("Your sign-in session is invalid. Please sign in again.");
-  }
-  return payload.sub;
+  if (!payload.sub || typeof payload.sub !== "string" || !Number.isFinite(Number(payload.auth_time))) throw new Error("Your sign-in session is invalid. Please sign in again.");
+  return { uid: payload.sub, authTime: Number(payload.auth_time) };
 }
 
 function makeMealPrompt(prompt, category) {
@@ -379,6 +377,23 @@ export default {
     const url = new URL(request.url);
     if (!url.pathname.startsWith("/api/")) return env.ASSETS.fetch(request);
 
+    if (url.pathname === "/api/internal/session-revoked" && request.method === "POST") {
+      const supplied = request.headers.get("x-internal-secret") || "";
+      const expected = String(env.SESSION_REVOCATION_SECRET || "");
+      if (!expected || supplied !== expected) return json({ error: "Not found." }, 404);
+      let body; try { body = await request.json(); } catch { return json({ error: "Invalid request body." }, 400); }
+      const uid = typeof body.uid === "string" ? body.uid : "";
+      const revokedAfter = Number(body.revokedAfter);
+      if (!uid || uid.length > 128 || !Number.isSafeInteger(revokedAfter) || revokedAfter <= 0) return json({ error: "Invalid revocation record." }, 400);
+      if (!env.DB) return json({ error: "Account service is not configured." }, 503);
+      await env.DB.prepare("INSERT INTO session_revocations (user_id, revoked_after, updated_at) VALUES (?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET revoked_after = MAX(session_revocations.revoked_after, excluded.revoked_after), updated_at = excluded.updated_at").bind(uid, revokedAfter, Date.now()).run();
+      const stored = await env.DB.prepare("SELECT revoked_after FROM session_revocations WHERE user_id = ?").bind(uid).first();
+      if (!stored || Number(stored.revoked_after) < revokedAfter) {
+        console.error("Session revocation write could not be confirmed", { databaseBinding: "DB" });
+        return json({ error: "Session revocation write could not be confirmed." }, 503);
+      }
+      return json({ ok: true, confirmed: true, revokedAfter: Number(stored.revoked_after) });
+    }
     if (url.pathname === "/api/razorpay-webhook" && request.method === "POST") return handleRazorpayWebhook(request, env);
     const allowedPaths = ["/api/meal-analysis", "/api/demo-analysis", "/api/ai-status", "/api/usage", "/api/access", "/api/create-subscription", "/api/verify-subscription", "/api/cancel-subscription", "/api/abandon-subscription", "/api/delete-account-data"];
     if (request.method !== "POST" || !allowedPaths.includes(url.pathname)) {
@@ -397,12 +412,14 @@ export default {
       return json({ error: message, missing: missingConfig }, 503);
     }
 
-    let userId;
+    let identity;
+    try { identity = await authenticate(request, env.FIREBASE_PROJECT_ID); }
+    catch { return json({ error: "Please sign in again before using AI meal analysis." }, 401); }
+    const userId = identity.uid;
     try {
-      userId = await authenticate(request, env.FIREBASE_PROJECT_ID);
-    } catch {
-      return json({ error: "Please sign in again before using AI meal analysis." }, 401);
-    }
+      const revocation = await env.DB.prepare("SELECT revoked_after FROM session_revocations WHERE user_id = ?").bind(userId).first();
+      if (revocation && identity.authTime < Number(revocation.revoked_after)) return json({ error: "Your session was signed out from another device. Please sign in again.", code: "SESSION_REVOKED" }, 401);
+    } catch { return json({ error: "Account security checks are temporarily unavailable. Please try again." }, 503); }
 
     if (url.pathname === "/api/create-subscription" || url.pathname === "/api/verify-subscription" || url.pathname === "/api/cancel-subscription" || url.pathname === "/api/abandon-subscription" || url.pathname === "/api/delete-account-data") {
       let body; try { body = await request.json(); } catch { return json({ error: "Invalid request body." }, 400); }
@@ -430,7 +447,8 @@ export default {
             env.DB.prepare("DELETE FROM payment_methods WHERE user_id = ?").bind(userId),
             env.DB.prepare("DELETE FROM demo_usage WHERE user_id = ?").bind(userId),
             env.DB.prepare("DELETE FROM ai_usage WHERE user_id = ?").bind(userId),
-            env.DB.prepare("DELETE FROM user_entitlements WHERE user_id = ?").bind(userId)
+            env.DB.prepare("DELETE FROM user_entitlements WHERE user_id = ?").bind(userId),
+            env.DB.prepare("DELETE FROM session_revocations WHERE user_id = ?").bind(userId)
           ]);
           return json({ ok: true, subscriptionCancelled: Boolean(subscriptionId) });
         } catch (error) {
