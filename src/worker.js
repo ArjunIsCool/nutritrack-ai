@@ -41,7 +41,7 @@ const NUTRIENT_KEYS = [
   "energy_kcal", "protein_g", "carbohydrate_g", "total_fat_g", "saturated_fat_g",
   "trans_fat_g", "monounsaturated_fat_g", "polyunsaturated_fat_g", "cholesterol_mg",
   "fiber_g", "total_sugars_g", "added_sugars_g", "sodium_mg", "potassium_mg",
-  "calcium_mg", "iron_mg", "magnesium_mg", "zinc_mg", "phosphorus_mg",
+  "calcium_mg", "iron_mg", "magnesium_mg", "zinc_mg", "phosphorus_mg", "choline_mg",
   "selenium_ug", "copper_mg", "manganese_mg", "iodine_ug", "vitamin_a_ug_rae",
   "vitamin_c_mg", "vitamin_d_ug", "vitamin_e_mg", "vitamin_k_ug", "vitamin_b1_mg",
   "vitamin_b2_mg", "vitamin_b3_mg", "vitamin_b5_mg", "vitamin_b6_mg", "vitamin_b7_ug",
@@ -56,7 +56,7 @@ function makeMealPrompt(prompt, category, countryCode) {
     "You are a careful, globally aware nutrition estimation assistant. The user selected country / food market ISO code " + country + ". Use it only to interpret local food names, common recipes, labels, and market context. Do not assume the user eats a particular cuisine.",
     "Analyze the meal described and/or shown in the attached photos. Text description: " + JSON.stringify(prompt) + ". Meal category: " + category + ".",
     "Return ONLY valid JSON with meal_name, items, totals, quality, assessment, assumptions, needs_clarification, and clarifying_question. Each item and totals must contain legacy numeric fields calories, protein, carbs, fat, fiber, sugar plus a nutrients object with exactly these keys: " + schema,
-    "Estimate nutrients for the stated item portion and whole-meal total respectively. Use null when unknown or not responsibly estimable; never invent a value and never use zero to mean unknown. Units are encoded in keys: kcal for energy; g for protein/carbohydrate/fats/fibre/sugars/water; mg for cholesterol, sodium, potassium, calcium, iron, magnesium, zinc, phosphorus, copper, manganese, vitamins C/E/B1/B2/B3/B5/B6 and caffeine; g for alcohol; µg for selenium, iodine, vitamins A/D/K/B7/B9/B12.",
+    "Estimate nutrients for the stated item portion and whole-meal total respectively. Use null when unknown or not responsibly estimable; never invent a value and never use zero to mean unknown. Units are encoded in keys: kcal for energy; g for protein/carbohydrate/fats/fibre/sugars/water; mg for cholesterol, sodium, potassium, calcium, iron, magnesium, zinc, phosphorus, copper, manganese, vitamins C/E/B1/B2/B3/B5/B6 and choline; mg for caffeine; g for alcohol; µg for selenium, iodine, vitamins A/D/K/B7/B9/B12.",
     "Use metric portions, realistic recipe estimates, and account for cooking oil where possible. Do not claim exactness or clinical precision. If portion ambiguity materially changes the estimate, set needs_clarification true and ask one concise question while still providing a provisional estimate. Do not provide diagnoses."
   ].join("\n");
 }
