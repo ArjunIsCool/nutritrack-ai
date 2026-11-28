@@ -46,7 +46,7 @@ Build with `npm run build`. The Cloudflare Workers deployment is configured in `
 - Country-aware Gemini text and photo meal analysis with a versioned, comprehensive nutrient estimate schema
 - UPC-A, EAN-8, EAN-13 and GTIN-14 barcode validation with authenticated Open Food Facts v3 product lookup and sourced per-100 g nutrient snapshots
 - Daily, weekly and monthly nutrient trends that show known-value subtotals and per-period meal coverage without treating missing values as zero
-- Contextual nutrition references: WHO adult sodium upper limit and ICMR-NIN 2020 adult references for supported Indian profiles
+- Contextual nutrition references: WHO adult sodium upper limit, ICMR-NIN 2020 adult references for supported Indian profiles, and National Academies DRI references for supported US/Canada adult profiles
 - Up to five compressed photos per analysis, with previews and server-side validation
 - Itemized saved analysis snapshots with nutrient provenance and a complete meal detail view
 - Meal history, daily totals and macro tracking
