@@ -94,7 +94,7 @@ Phase 4 turns NutriTrack AI from a calorie/macro logger into a country-aware nut
 - Version 1 of the nutrient schema covers 40 fields across energy, macros, fats, fibre/sugars, minerals, vitamins, water, caffeine, and alcohol.
 - AI-returned unknown values remain null and are labelled unavailable; numeric estimates carry units, serving basis, and source/status metadata.
 - Saved meals preserve the full analysis snapshot, per-item nutrient snapshots, assumptions, clarification, country, model, and analysis timestamp. Meal rows open a read-only detail view.
-- Automated Node tests were added for country options and nutrition normalization. They still need to be executed in CI/Preview validation.
+- Automated Node tests were added for country options and nutrition normalization. The Node test suite and Vite production build passed in GitHub Actions run #2. Latest Cloudflare Preview deployment and signed-in end-to-end behavior still need confirmation.
 
 ## Definition of done
 
