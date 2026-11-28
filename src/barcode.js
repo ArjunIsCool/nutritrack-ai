@@ -83,7 +83,7 @@ export function normalizeOpenFoodFactsProduct(product, barcode, retrievedAt = ne
     quantity: String(product.quantity || "").slice(0, 120),
     categories: String(product.categories || "").slice(0, 300),
     market: Array.isArray(product.countries_tags) ? product.countries_tags : [],
-    imageUrl: typeof product.image_front_small_url === "string" && /^https:\\/\\//i.test(product.image_front_small_url) ? product.image_front_small_url : null,
+    imageUrl: typeof product.image_front_small_url === "string" && product.image_front_small_url.startsWith("https://") ? product.image_front_small_url : null,
     nutrients,
     basis: "per-100g",
     source: "Open Food Facts",
