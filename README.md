@@ -44,6 +44,9 @@ Build with `npm run build`. The Cloudflare Workers deployment is configured in `
 - Weight loss, maintenance and gain goal modes
 - Editable profile and weekly rate settings
 - Country-aware Gemini text and photo meal analysis with a versioned, comprehensive nutrient estimate schema
+- UPC-A, EAN-8, EAN-13 and GTIN-14 barcode validation with authenticated Open Food Facts v3 product lookup and sourced per-100 g nutrient snapshots
+- Daily, weekly and monthly nutrient trends that show known-value subtotals and per-period meal coverage without treating missing values as zero
+- Contextual nutrition references: WHO adult sodium upper limit and ICMR-NIN 2020 adult references for supported Indian profiles
 - Up to five compressed photos per analysis, with previews and server-side validation
 - Itemized saved analysis snapshots with nutrient provenance and a complete meal detail view
 - Meal history, daily totals and macro tracking
@@ -53,7 +56,8 @@ Build with `npm run build`. The Cloudflare Workers deployment is configured in `
 - Responsive dark UI and PWA install support
 
 ## Current limitations
-- Barcode logging is not included yet; it is planned for Phase 4. Original meal photos are processed for analysis and are not retained in saved meal records.
+- Barcode lookup currently uses Open Food Facts as a community-contributed secondary catalogue. It does not guarantee that a product exists or that submitted label data are correct; verify against the physical package. Hardware barcode readers that type into the barcode field are supported; camera-based barcode scanning and direct GS1/manufacturer integrations are not included yet. Original meal photos are processed for analysis and are not retained in saved meal records.
+- Nutrient trend subtotals are only the values available from logged meals, not proof of complete daily intake. Reference values are displayed only where a source and matching adult profile are available; they are not diagnoses or personalized medical advice.
 - The service worker caches the app shell and previously visited static assets; Gemini analysis requires an internet connection.
 - The first profile setup uses editable starter values (age 21, 175 cm, 70 kg, target 65 kg) as convenience defaults. Confirm or change them before relying on the calculated target.
 - The calculator applies a conservative minimum calorie floor of 1,500 kcal/day for this initial male-profile implementation. It is a guardrail, not a personalized clinical recommendation.
