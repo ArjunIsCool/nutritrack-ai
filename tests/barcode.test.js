@@ -6,6 +6,7 @@ test('validates EAN-8, UPC-A and EAN-13 check digits', () => {
   assert.equal(normalizeRetailBarcode('96385074'), '96385074');
   assert.equal(normalizeRetailBarcode('036000291452'), '036000291452');
   assert.equal(normalizeRetailBarcode('4006381333931'), '4006381333931');
+  assert.equal(normalizeRetailBarcode('00036000291452'), '00036000291452');
   assert.equal(normalizeRetailBarcode('4006381333932'), null);
 });
 
