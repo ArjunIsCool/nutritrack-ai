@@ -113,7 +113,7 @@ function App(){
           const migratedProfile = { ...seedProfile, ...(legacyProfile || profile), countryCode: /^[A-Z]{2}$/.test((legacyProfile || profile).countryCode || '') ? (legacyProfile || profile).countryCode : DEFAULT_COUNTRY_CODE };
           const migratedMeals = Array.isArray(legacyMeals) ? legacyMeals : meals;
           const migratedWeights = Array.isArray(legacyWeights) ? legacyWeights : weights;
-          if (legacyProfile) setProfile(legacyProfile);
+          if (legacyProfile) setProfile(migratedProfile);
           if (Array.isArray(legacyMeals)) setMeals(legacyMeals);
           if (Array.isArray(legacyWeights)) setWeights(legacyWeights);
           await saveCloudData(authUser.uid, { profile: migratedProfile, meals: migratedMeals, weights: migratedWeights });
