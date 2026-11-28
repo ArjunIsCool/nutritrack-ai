@@ -43,7 +43,7 @@ Build with `npm run build`. The Cloudflare Workers deployment is configured in `
 - Mifflin-St Jeor BMR estimate and activity-adjusted TDEE
 - Weight loss, maintenance and gain goal modes
 - Editable profile and weekly rate settings
-- Gemini-powered natural-language meal analysis with itemized estimates
+- Country-aware Gemini meal analysis with a versioned, comprehensive nutrient estimate schema\n- Itemized saved analysis snapshots with nutrient provenance and a complete meal detail view
 - Meal history, daily totals and macro tracking
 - Seven-day calorie chart
 - Weight check-ins
@@ -51,7 +51,7 @@ Build with `npm run build`. The Cloudflare Workers deployment is configured in `
 - Responsive dark UI and PWA install support
 
 ## Current limitations
-- Text-based food logging only; photo and voice logging are not included in this initial build.
+- Photo and barcode logging are not included yet; these are planned for Phase 4.
 - The service worker caches the app shell and previously visited static assets; Gemini analysis requires an internet connection.
 - The first profile setup uses editable starter values (age 21, 175 cm, 70 kg, target 65 kg) as convenience defaults. Confirm or change them before relying on the calculated target.
 - The calculator applies a conservative minimum calorie floor of 1,500 kcal/day for this initial male-profile implementation. It is a guardrail, not a personalized clinical recommendation.
