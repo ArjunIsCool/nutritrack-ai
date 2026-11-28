@@ -96,7 +96,7 @@ Phase 4 turns NutriTrack AI from a calorie/macro logger into a country-aware nut
 - AI-returned unknown values remain null and are labelled unavailable; numeric estimates carry units, serving basis, and source/status metadata.
 - Saved meals preserve the full analysis snapshot, per-item nutrient snapshots, assumptions, clarification, country, model, and analysis timestamp. Meal rows open a read-only detail view.
 - Photo input supports up to five JPEG/PNG/WebP attachments with browser-side resize/compression, optional caption, previews, and server-side count/MIME/base64/per-file/aggregate-size validation. Original images are not persisted; saved meals retain only attachment metadata.
-- Automated Node tests cover country options, nutrient normalization, provenance, versioning, and photo validation/limits. The text-analysis milestone passed the Node test suite and Vite production build in GitHub Actions run #2; the expanded photo tests have passed in run #24, with its production build still running. Latest Cloudflare Preview deployment and signed-in end-to-end behavior still need confirmation.
+- Automated Node tests cover country options, nutrient normalization, provenance, versioning, and photo validation/limits. The expanded Node test suite (11 tests), Vite production build, and Wrangler Worker dry-run bundle validation all passed in GitHub Actions run #36. Latest Cloudflare Preview deployment and signed-in end-to-end behavior still need confirmation. The Vite build reports a non-blocking large JavaScript chunk warning.
 
 ## Definition of done
 
