@@ -136,7 +136,7 @@ function convertFdcAmount(amount, sourceUnit, targetUnit) {
 
 export function normalizeUsdaFood(food, barcode, retrievedAt = new Date().toISOString()) {
   if (!food || typeof food !== "object" || !food.fdcId || !food.gtinUpc) return null;
-  const canonical = value => String(value || "").replace(/\\D/g, "").replace(/^0+/, "");
+  const canonical = value => String(value || "").replace(/\D/g, "").replace(/^0+/, "");
   if (canonical(food.gtinUpc) !== canonical(barcode)) return null;
   const values = {
     energy_kcal: null, protein_g: null, carbohydrate_g: null, total_fat_g: null,
