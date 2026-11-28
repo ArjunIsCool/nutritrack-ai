@@ -127,10 +127,18 @@ function App(){
         if (active) { setSyncStatus('error'); setAuthError(error.message || 'Cloud sync failed. Your account data is still available.'); }
       }
     }, (error) => {
-      // Revoking sessions intentionally invalidates the current Firestore listener
-      // before this browser signs out. Do not surface that expected permission error.
-      if (active && !(sessionRevokingRef.current && error.code === 'permission-denied')) {
-        setSyncStatus('error'); setAuthError(error.message || 'Cloud sync failed. Your account data is still available.');
+      // A permission denial means this Firebase session can no longer access
+      // its account data. Fail closed: stop rendering the app and return to sign-in.
+      if (!active || (sessionRevokingRef.current && error.code === 'permission-denied')) return;
+      setCloudReady(false);
+      setSyncStatus('error');
+      if (error.code === 'permission-denied') {
+        setAuthError('Your session is no longer authorized. Please sign in again.');
+        signOut(auth).catch((signOutError) => {
+          setAuthError(signOutError.message || 'Your session expired. Please reload and sign in again.');
+        });
+      } else {
+        setAuthError(error.message || 'Cloud sync failed. Your account data is still available.');
       }
     });
     return () => { active = false; unsubscribe(); };
