@@ -22,3 +22,5 @@
 .demo-meter{display:grid;gap:4px;padding:11px 12px;margin:12px 0;background:#293522;border:1px solid #435735;border-radius:9px}
 .demo-meter b{font-size:10px;color:#c8ed9d}
 .demo-meter small{font-size:9px;color:#aab99b}
+
+.country-field{display:block;margin:14px 0 17px}.country-field>.field-label{margin:0 0 8px}.country-field select{width:100%;border:1px solid #343c30;background:#121610;color:#edf0e7;border-radius:9px;padding:12px;font-size:11px;outline:none}.country-field select:focus{border-color:#8caf5f;box-shadow:0 0 0 3px #9fcf6715}.country-field select:disabled{opacity:.7;cursor:not-allowed}.country-field>small{display:block;font-size:9px;color:#818b78;line-height:1.5;margin-top:6px}
