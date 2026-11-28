@@ -21,7 +21,7 @@ export function getNutritionReference(nutrientKey, profile = {}) {
   }
   const sex = String(profile.sex || "").toLowerCase();
   const country = String(profile.countryCode || "").toUpperCase();
-  if (country !== "IN" || age < 18 || age > 60 || !ICMR_INDIA_ADULT[sex]) return null;
+  if (country !== "IN" || !Number.isFinite(age) || age < 18 || age > 60 || !ICMR_INDIA_ADULT[sex]) return null;
   const activity = profile.activity === "high" ? "heavy" : profile.activity === "moderate" ? "moderate" : "sedentary";
   const values = ICMR_INDIA_ADULT[sex];
   const value = nutrientKey === "fiber_g" ? values.fiber_g[activity] : values[nutrientKey];
