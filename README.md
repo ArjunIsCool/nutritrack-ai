@@ -3,7 +3,7 @@
 A mobile-first, installable Progressive Web App for personal calorie and nutrition tracking. It uses a Cloudflare Worker to authenticate and proxy Gemini meal-analysis requests, with mandatory Firebase Authentication and Firestore-backed account data.
 
 ## Requirements
-- Node.js 18 or newer
+- Node.js 22.12 or newer (required by the current Wrangler toolchain)
 - A Gemini API key from https://aistudio.google.com/apikey
 
 ## Account access and cloud data
