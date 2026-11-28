@@ -43,7 +43,8 @@ Build with `npm run build`. The Cloudflare Workers deployment is configured in `
 - Mifflin-St Jeor BMR estimate and activity-adjusted TDEE
 - Weight loss, maintenance and gain goal modes
 - Editable profile and weekly rate settings
-- Country-aware Gemini meal analysis with a versioned, comprehensive nutrient estimate schema\n- Itemized saved analysis snapshots with nutrient provenance and a complete meal detail view
+- Country-aware Gemini meal analysis with a versioned, comprehensive nutrient estimate schema
+- Itemized saved analysis snapshots with nutrient provenance and a complete meal detail view
 - Meal history, daily totals and macro tracking
 - Seven-day calorie chart
 - Weight check-ins
