@@ -202,20 +202,46 @@ function App(){
   const handleRevokeSessions = async () => {
     if (!authUser || !auth || !functions || sessionRevokeBusy) return;
     if (!window.confirm('Sign out NutriTrack AI on every device? You will be signed out here too and need to sign in again.')) return;
-    setSessionRevokeBusy(true); setSessionRevokeError('');
+
+    setSessionRevokeBusy(true);
+    setSessionRevokeError('');
     sessionRevokingRef.current = true;
+
+    let revokeError = '';
     try {
-      // An authenticated callable is sufficient: revoking sessions is a security
-      // action, not a destructive account change, so no extra Google popup is needed.
+      // The callable revokes this user's sessions; no second Google popup is needed.
       await httpsCallable(functions, 'revokeMySessions')({});
-      await signOut(auth);
-      setCloudReady(false); setProfile(seedProfile); setMeals([]); setWeights([]);
-      setAiUsage(null); setAccess(null); setDemoUsage(null);
-      setNotice('You have been signed out on all devices.');
     } catch (error) {
+      // The server may have completed Firebase revocation before a downstream
+      // security update failed. Always try to end this browser session as well.
+      revokeError = error.message || 'The server could not confirm session revocation.';
+    }
+
+    try {
+      await signOut(auth);
+      setAuthUser(null);
+      setCloudReady(false);
+      setSyncStatus('local');
+      setProfile(seedProfile);
+      setMeals([]);
+      setWeights([]);
+      setAiUsage(null);
+      setAccess(null);
+      setDemoUsage(null);
+
+      if (revokeError) {
+        setAuthError(`This device has been signed out, but NutriTrack could not confirm sign-out on every device. Sign in again and retry if needed. Details: ${revokeError}`);
+      } else {
+        setAuthError('');
+        setNotice('You have been signed out on all devices.');
+      }
+    } catch (error) {
+      // Keep the account visible if Firebase itself could not sign out locally.
       sessionRevokingRef.current = false;
-      setSessionRevokeError(error.message || 'Could not sign out on all devices. Please try again.');
-    } finally { setSessionRevokeBusy(false); }
+      setSessionRevokeError(error.message || 'Could not sign out this device. Please retry.');
+    } finally {
+      setSessionRevokeBusy(false);
+    }
   };
   const handleDeleteAccount = async () => {
     if (!authUser || !auth) return;
