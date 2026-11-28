@@ -10,7 +10,7 @@ test('WHO adult sodium upper limit is available regardless of country', () => {
 });
 
 test('ICMR India adult references depend on sex and activity category', () => {
-  const male = getNutritionReference('fiber_g', { age: 25, sex: 'male', countryCode: 'IN', activity: 'moderate' });
+  const male = getNutritionReference('fiber_g', { age: 25, sex: 'male', countryCode: 'IN', workCategory: 'moderate' });
   const female = getNutritionReference('iron_mg', { age: 25, sex: 'female', countryCode: 'IN' });
   assert.equal(male.value, 40);
   assert.equal(female.value, 29);
