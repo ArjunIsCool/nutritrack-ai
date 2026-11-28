@@ -24,6 +24,7 @@ export const NUTRIENTS = [
   ['copper_mg', 'Copper', 'mg', 'minerals'],
   ['manganese_mg', 'Manganese', 'mg', 'minerals'],
   ['iodine_ug', 'Iodine', 'µg', 'minerals'],
+  ['choline_mg', 'Choline', 'mg', 'vitamins'],
   ['vitamin_a_ug_rae', 'Vitamin A', 'µg RAE', 'vitamins'],
   ['vitamin_c_mg', 'Vitamin C', 'mg', 'vitamins'],
   ['vitamin_d_ug', 'Vitamin D', 'µg', 'vitamins'],
