@@ -44,7 +44,7 @@ const NUTRIENT_KEYS = [
   "selenium_ug", "copper_mg", "manganese_mg", "iodine_ug", "vitamin_a_ug_rae",
   "vitamin_c_mg", "vitamin_d_ug", "vitamin_e_mg", "vitamin_k_ug", "vitamin_b1_mg",
   "vitamin_b2_mg", "vitamin_b3_mg", "vitamin_b5_mg", "vitamin_b6_mg", "vitamin_b7_ug",
-  "vitamin_b9_ug_dfe", "vitamin_b12_ug", "water_g", "caffeine_mg"
+  "vitamin_b9_ug_dfe", "vitamin_b12_ug", "water_g", "caffeine_mg", "alcohol_g"
 ];
 
 function makeMealPrompt(prompt, category, countryCode) {
