@@ -30,6 +30,7 @@ Build with `npm run build`. The Cloudflare Workers deployment is configured in `
 
 ## Important security and data notes
 - Gemini requests are sent through the Cloudflare Worker. Configure `GEMINI_API_KEY` as a Worker Secret and `FIREBASE_PROJECT_ID` as a Worker variable; never put server secrets in `VITE_*` variables.
+- Optional US branded barcode enrichment uses USDA FoodData Central exact-GTIN matching. Configure a data.gov API key as a Worker Secret with `npx wrangler secret put FDC_API_KEY`. The key is never sent to the browser. When absent or no exact match is found, lookup falls back to Open Food Facts.
 - The Worker verifies Firebase ID tokens, provides five lifetime demo analyses to accounts without premium access, and enforces 20 analyses per user per UTC day and 500 per UTC month for active trial/subscription entitlements. Demo usage and subscription access are enforced in D1.
 - Razorpay Test Mode subscription checkout is implemented on the feature branch. Trial access still depends on the separately configured signed webhook secret and verified card authorization event; complete end-to-end tests before enabling Live payments.
 - Meal prompts are forwarded to Google's Gemini API when you request analysis. Saved profile and nutrition history are stored in your authenticated Firestore account.
@@ -56,7 +57,7 @@ Build with `npm run build`. The Cloudflare Workers deployment is configured in `
 - Responsive dark UI and PWA install support
 
 ## Current limitations
-- Barcode lookup currently uses Open Food Facts as a community-contributed secondary catalogue. It does not guarantee that a product exists or that submitted label data are correct; verify against the physical package. Hardware barcode readers that type into the barcode field are supported; camera-based barcode scanning and direct GS1/manufacturer integrations are not included yet. Original meal photos are processed for analysis and are not retained in saved meal records.
+- US barcode lookup prefers an exact GTIN match in USDA FoodData Central when the optional `FDC_API_KEY` Worker Secret is configured; otherwise it falls back to Open Food Facts. Other markets currently use Open Food Facts as a community-contributed secondary catalogue. It does not guarantee that a product exists or that submitted label data are correct; verify against the physical package. Hardware barcode readers that type into the barcode field are supported; camera-based barcode scanning and direct GS1/manufacturer integrations are not included yet. Original meal photos are processed for analysis and are not retained in saved meal records.
 - Nutrient trend subtotals are only the values available from logged meals, not proof of complete daily intake. Reference values are displayed only where a source and matching adult profile are available; they are not diagnoses or personalized medical advice.
 - The service worker caches the app shell and previously visited static assets; Gemini analysis requires an internet connection.
 - The first profile setup uses editable starter values (age 21, 175 cm, 70 kg, target 65 kg) as convenience defaults. Confirm or change them before relying on the calculated target.
