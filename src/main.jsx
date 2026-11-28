@@ -150,8 +150,14 @@ function App(){
     const timer = setTimeout(() => {
       saveCloudData(authUser.uid, { profile, weights, meals })
         .catch((error) => {
+          setCloudReady(false);
           setSyncStatus('error');
-          setAuthError(error.message || 'Could not save to cloud. Your account data remains available.');
+          if (error.code === 'permission-denied') {
+            setAuthError('Your session is no longer authorized. Please sign in again.');
+            signOut(auth).catch(() => {});
+          } else {
+            setAuthError(error.message || 'Could not save to cloud. Your account data remains available.');
+          }
         });
     }, 900);
     return () => clearTimeout(timer);
