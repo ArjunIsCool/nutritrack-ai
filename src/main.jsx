@@ -6,10 +6,9 @@ import { deleteUser, onAuthStateChanged, reauthenticateWithPopup, signInWithPopu
 import { auth, firebaseConfigured, functions, googleProvider } from './firebase';
 import { httpsCallable } from 'firebase/functions';
 import { deleteCloudData, deleteCloudMeal, replaceCloudData, saveCloudData, subscribeCloudData } from './cloudSync';
-import './style.css';
 import { COUNTRIES, DEFAULT_COUNTRY_CODE } from './countries';
-import { createNutritionSnapshot } from './nutritionSchema';
-import { NUTRIENTS } from './nutritionSchema';
+import { createNutritionSnapshot, NUTRIENTS } from './nutritionSchema';
+import './style.css';
 
 const today = () => new Date().toISOString().slice(0,10);
 const seedProfile = { age: 21, sex: 'male', height: 175, weight: 70, targetWeight: 65, activity: 'moderate', goal: 'lose', pace: 0.25, countryCode: DEFAULT_COUNTRY_CODE };
