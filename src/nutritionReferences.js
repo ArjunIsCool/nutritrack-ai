@@ -21,6 +21,24 @@ export function getNutritionReference(nutrientKey, profile = {}) {
   }
   const sex = String(profile.sex || "").toLowerCase();
   const country = String(profile.countryCode || "").toUpperCase();
+  if (["US", "CA"].includes(country) && Number.isFinite(age) && age >= 19 && age <= 50 && ["male", "female"].includes(sex)) {
+    const northAmerican = {
+      fiber_g: sex === "male" ? 38 : 25,
+      iron_mg: sex === "male" ? 8 : 18,
+      vitamin_b12_ug: 2.4,
+      vitamin_c_mg: sex === "male" ? 90 : 75,
+    };
+    const value = northAmerican[nutrientKey];
+    if (Number.isFinite(value)) {
+      const units = { fiber_g: "g/day", iron_mg: "mg/day", vitamin_b12_ug: "µg/day", vitamin_c_mg: "mg/day" };
+      return {
+        value, unit: units[nutrientKey], kind: "rda-ai",
+        label: "National Academies DRI for US/Canada adults aged 19–50",
+        source: "National Academies / Food and Nutrition Board Dietary Reference Intakes",
+        sourceUrl: "https://www.ncbi.nlm.nih.gov/books/NBK278991/",
+      };
+    }
+  }
   if (country !== "IN" || !Number.isFinite(age) || age < 18 || age > 60 || !ICMR_INDIA_ADULT[sex]) return null;
   const activity = profile.activity === "high" ? "heavy" : profile.activity === "moderate" ? "moderate" : "sedentary";
   const values = ICMR_INDIA_ADULT[sex];
