@@ -519,7 +519,7 @@ function App(){
         throw new Error('Camera access requires HTTPS (or localhost) and a browser camera permission. Open the secure app URL and allow camera access in your browser settings.');
       }
       setBarcodeCameraStatus('Requesting camera permission…');
-      const { BrowserMultiFormatReader, BrowserCodeReader } = await import(/* @vite-ignore */ 'https://cdn.jsdelivr.net/npm/@zxing/browser@0.2.1/+esm');
+      const { BrowserMultiFormatReader, BrowserCodeReader } = await import(/* @vite-ignore */ 'https://esm.sh/@zxing/browser@0.2.1?bundle');
       if (cancelled) return;
       scanner = new BrowserMultiFormatReader();
       barcodeScannerRef.current = scanner;
@@ -622,7 +622,7 @@ function App(){
     setBarcodeError('');
     let objectUrl = '';
     try {
-      const { BrowserMultiFormatReader } = await import(/* @vite-ignore */ 'https://cdn.jsdelivr.net/npm/@zxing/browser@0.2.1/+esm');
+      const { BrowserMultiFormatReader } = await import(/* @vite-ignore */ 'https://esm.sh/@zxing/browser@0.2.1?bundle');
       const reader = new BrowserMultiFormatReader();
       const image = new Image();
       objectUrl = URL.createObjectURL(file);
