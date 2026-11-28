@@ -36,8 +36,28 @@ async function authenticate(request, projectId) {
   return { uid: payload.sub, authTime: Number(payload.auth_time) };
 }
 
-function makeMealPrompt(prompt, category) {
-  return `You are a careful nutrition estimation assistant for an Indian user. Analyze this meal: "${prompt.replace(/"/g, '\\"')}". Meal category selected: ${category}. Return ONLY valid JSON with this exact structure: {"meal_name":"short title","items":[{"name":"food and portion","calories":0,"protein":0,"carbs":0,"fat":0,"fiber":0,"sugar":0}],"totals":{"calories":0,"protein":0,"carbs":0,"fat":0,"fiber":0,"sugar":0},"quality":"Good|Moderate|Occasional","assessment":"2-3 concise sentences","assumptions":["portion assumptions"],"needs_clarification":false,"clarifying_question":""}. Use realistic estimates, metric quantities, and account for cooking oil where possible. Values must be numbers. Do not claim exactness. If portion ambiguity materially changes the estimate, set needs_clarification true and ask one concise question; still provide a provisional estimate. Do not give medical diagnoses.`;
+const NUTRIENT_KEYS = [
+  "energy_kcal", "protein_g", "carbohydrate_g", "total_fat_g", "saturated_fat_g",
+  "trans_fat_g", "monounsaturated_fat_g", "polyunsaturated_fat_g", "cholesterol_mg",
+  "fiber_g", "total_sugars_g", "added_sugars_g", "sodium_mg", "potassium_mg",
+  "calcium_mg", "iron_mg", "magnesium_mg", "zinc_mg", "phosphorus_mg",
+  "selenium_ug", "copper_mg", "manganese_mg", "iodine_ug", "vitamin_a_ug_rae",
+  "vitamin_c_mg", "vitamin_d_ug", "vitamin_e_mg", "vitamin_k_ug", "vitamin_b1_mg",
+  "vitamin_b2_mg", "vitamin_b3_mg", "vitamin_b5_mg", "vitamin_b6_mg", "vitamin_b7_ug",
+  "vitamin_b9_ug_dfe", "vitamin_b12_ug", "water_g", "caffeine_mg"
+];
+
+function makeMealPrompt(prompt, category, countryCode) {
+  const country = String(countryCode || "IN").toUpperCase();
+  const nutrientTemplate = Object.fromEntries(NUTRIENT_KEYS.map((key) => [key, null]));
+  const schema = JSON.stringify(nutrientTemplate);
+  return [
+    "You are a careful, globally aware nutrition estimation assistant. The user selected country / food market ISO code " + country + ". Use it only to interpret local food names, common recipes, labels, and market context. Do not assume the user eats a particular cuisine.",
+    "Analyze this meal: " + JSON.stringify(prompt) + ". Meal category: " + category + ".",
+    "Return ONLY valid JSON with meal_name, items, totals, quality, assessment, assumptions, needs_clarification, and clarifying_question. Each item and totals must contain legacy numeric fields calories, protein, carbs, fat, fiber, sugar plus a nutrients object with exactly these keys: " + schema,
+    "Estimate nutrients for the stated item portion and whole-meal total respectively. Use null when unknown or not responsibly estimable; never invent a value and never use zero to mean unknown. Units are encoded in keys: kcal for energy; g for protein/carbohydrate/fats/fibre/sugars/water; mg for cholesterol, sodium, potassium, calcium, iron, magnesium, zinc, phosphorus, copper, manganese, vitamins C/E/B1/B2/B3/B5/B6 and caffeine; µg for selenium, iodine, vitamins A/D/K/B7/B9/B12.",
+    "Use metric portions, realistic recipe estimates, and account for cooking oil where possible. Do not claim exactness or clinical precision. If portion ambiguity materially changes the estimate, set needs_clarification true and ask one concise question while still providing a provisional estimate. Do not provide diagnoses."
+  ].join("\n");
 }
 
 async function getUsage(db, userId, now = Date.now()) {
@@ -544,6 +564,9 @@ export default {
 
     const prompt = typeof body.prompt === "string" ? body.prompt.trim() : "";
     const category = typeof body.category === "string" ? body.category.slice(0, 30) : "Meal";
+    const countryCode = typeof body.countryCode === "string" && /^[A-Za-z]{2}$/.test(body.countryCode)
+      ? body.countryCode.toUpperCase()
+      : "IN";
     if (!prompt || prompt.length > 4000) {
       return json({ error: "Please enter a meal description under 4,000 characters." }, 400);
     }
@@ -557,7 +580,7 @@ export default {
       try { demoReservation = await reserveDemo(env.DB, userId); }
       catch { return json({ error: "Demo usage controls are unavailable. Please try again." }, 503); }
       if (!demoReservation.allowed) return json(demoReservation, demoReservation.status);
-      const demoResult = await callGemini(env, model, makeMealPrompt(prompt, category));
+      const demoResult = await callGemini(env, model, makeMealPrompt(prompt, category, countryCode));
       if (demoResult.error) {
         try { await refundDemo(env.DB, userId); } catch {}
         return json({ error: demoResult.error, demoUsage: await getDemoUsage(env.DB, userId) }, demoResult.status);
@@ -584,7 +607,7 @@ export default {
       }, reservation.status);
     }
 
-    const result = await callGemini(env, model, makeMealPrompt(prompt, category));
+    const result = await callGemini(env, model, makeMealPrompt(prompt, category, countryCode));
     if (result.error) {
       try {
         await refundAnalysis(env.DB, userId);
