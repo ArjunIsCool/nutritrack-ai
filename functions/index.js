@@ -21,9 +21,12 @@ async function updateWorkerRevocation(baseUrl, uid, revokedAfter, secret) {
         body: JSON.stringify({ uid, revokedAfter }),
         signal: AbortSignal.timeout(8000),
       });
-      if (response.ok) return;
       const body = await response.text();
-      lastFailure = `Worker returned HTTP ${response.status}${body ? `: ${body.slice(0, 240)}` : ''}`;
+      let result = {};
+      try { result = body ? JSON.parse(body) : {}; } catch {}
+      if (response.ok && result.ok === true && result.confirmed === true
+        && Number(result.revokedAfter) >= revokedAfter) return;
+      lastFailure = `Worker returned HTTP ${response.status}${body ? `: ${body.slice(0, 240)}` : ': response did not confirm the D1 write'}`;
       // Authentication/configuration errors will not be fixed by retrying.
       if ([400, 401, 403, 404].includes(response.status)) break;
     } catch (error) {
