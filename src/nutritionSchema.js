@@ -39,6 +39,7 @@ export const NUTRIENTS = [
   ['vitamin_b12_ug', 'Vitamin B12', 'µg', 'vitamins'],
   ['water_g', 'Water', 'g', 'other'],
   ['caffeine_mg', 'Caffeine', 'mg', 'other'],
+  ['alcohol_g', 'Alcohol', 'g', 'other'],
 ];
 
 export function normalizeNutrients(values, options = {}) {
@@ -55,7 +56,7 @@ export function normalizeNutrients(values, options = {}) {
       : Number(rawValue);
     const valid = numeric !== null && Number.isFinite(numeric) && numeric >= 0;
     const status = valid
-      ? (raw && typeof raw === 'object' && raw.status === 'sourced' ? 'sourced' : defaultStatus)
+      ? (raw && typeof raw === 'object' && ['sourced', 'user-entered', 'estimated'].includes(raw.status) ? raw.status : defaultStatus)
       : 'unavailable';
     return [key, {
       label,
