@@ -448,7 +448,12 @@ export default {
 
     if (url.pathname === "/api/barcode-lookup") {
       let body;
-      try { body = await request.json(); } catch { return json({ error: "Invalid barcode lookup request." }, 400); }
+      try {
+        const raw = await request.text();
+        if (raw.length > 2048) return json({ error: "Barcode lookup request is too large." }, 413);
+        body = JSON.parse(raw);
+      } catch { return json({ error: "Invalid barcode lookup request." }, 400); }
+      if (!body || typeof body !== "object" || Array.isArray(body)) return json({ error: "Invalid barcode lookup request." }, 400);
       const barcode = normalizeRetailBarcode(body.barcode);
       if (!barcode) return json({ error: "Enter a valid UPC-A, EAN-8, EAN-13 or GTIN-14 barcode." }, 400);
       try {
