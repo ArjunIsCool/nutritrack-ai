@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Activity, Apple, ArrowDownRight, ArrowUpRight, BarChart3, Bell, CalendarDays, Check, ChevronDown, ChevronRight, CircleHelp, Clock3, CloudDownload, Coffee, Flame, Gauge, HeartPulse, History, Home, Leaf, LoaderCircle, LogOut, Menu, MessageSquareText, MoreHorizontal, Plus, Scale, Settings, ShieldCheck, Sparkles, Target, Trash2, Utensils, Wallet, X, Zap } from 'lucide-react';
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
@@ -61,6 +61,7 @@ function App(){
   const [accountDeleteBusy,setAccountDeleteBusy] = useState(false);
   const [sessionRevokeBusy,setSessionRevokeBusy] = useState(false);
   const [sessionRevokeError,setSessionRevokeError] = useState('');
+  const sessionRevokingRef = useRef(false);
   const [accountDeleteError,setAccountDeleteError] = useState('');
   const targets = useMemo(()=>calcTargets(profile),[profile]);
   const todayMeals = meals.filter(m=>m.date===today());
@@ -125,7 +126,11 @@ function App(){
         if (active) { setSyncStatus('error'); setAuthError(error.message || 'Cloud sync failed. Your account data is still available.'); }
       }
     }, (error) => {
-      if (active) { setSyncStatus('error'); setAuthError(error.message || 'Cloud sync failed. Your account data is still available.'); }
+      // Revoking sessions intentionally invalidates the current Firestore listener
+      // before this browser signs out. Do not surface that expected permission error.
+      if (active && !(sessionRevokingRef.current && error.code === 'permission-denied')) {
+        setSyncStatus('error'); setAuthError(error.message || 'Cloud sync failed. Your account data is still available.');
+      }
     });
     return () => { active = false; unsubscribe(); };
   // Initial hydration is intentionally tied to the signed-in account only.
@@ -197,16 +202,18 @@ function App(){
     if (!authUser || !auth || !functions || sessionRevokeBusy) return;
     if (!window.confirm('Sign out NutriTrack AI on every device? You will be signed out here too and need to sign in again.')) return;
     setSessionRevokeBusy(true); setSessionRevokeError('');
+    sessionRevokingRef.current = true;
     try {
-      await reauthenticateWithPopup(authUser, googleProvider);
-      await authUser.getIdToken(true);
+      // An authenticated callable is sufficient: revoking sessions is a security
+      // action, not a destructive account change, so no extra Google popup is needed.
       await httpsCallable(functions, 'revokeMySessions')({});
       await signOut(auth);
       setCloudReady(false); setProfile(seedProfile); setMeals([]); setWeights([]);
       setAiUsage(null); setAccess(null); setDemoUsage(null);
       setNotice('You have been signed out on all devices.');
     } catch (error) {
-      setSessionRevokeError(error.code === 'auth/popup-closed-by-user' ? 'Google verification was cancelled. No sessions were changed.' : (error.message || 'Could not sign out on all devices. Please try again.'));
+      sessionRevokingRef.current = false;
+      setSessionRevokeError(error.message || 'Could not sign out on all devices. Please try again.');
     } finally { setSessionRevokeBusy(false); }
   };
   const handleDeleteAccount = async () => {
