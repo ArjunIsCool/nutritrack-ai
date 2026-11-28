@@ -16,7 +16,7 @@ Phase 4 turns NutriTrack AI from a calorie/macro logger into a country-aware nut
 - Add a required country selection to first-run profile setup; persist an ISO 3166-1 alpha-2 country code in the cloud profile.
 - Allow changing country later in profile settings.
 - Include the saved country in every relevant server-side analysis prompt. Do not hard-code India as the user's location.
-- Photo analysis accepts a maximum of five attachments per analysis request, enforced in both UI and Worker.
+- Photo analysis accepts a maximum of five attachments per analysis request, enforced in both UI and Worker.\n- Photos are resized/compressed in the browser and processed inline by Gemini; original images are not persisted. Only file metadata is included in saved analysis snapshots.
 - Allow an optional caption to accompany photo attachments.
 - Show previews, attachment count, validation errors, and removal controls before submission.
 - Validate file type, per-file size, aggregate request size, and actual attachment count before invoking Gemini.
