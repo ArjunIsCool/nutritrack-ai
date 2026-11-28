@@ -14,11 +14,7 @@ export const revokeMySessions = onCall({
   maxInstances: 5,
 }, async (request) => {
   if (!request.auth?.uid) throw new HttpsError('unauthenticated', 'Please sign in before revoking sessions.');
-  const authTime = Number(request.auth.token.auth_time || 0);
-  if (!authTime || Math.floor(Date.now() / 1000) - authTime > 5 * 60) {
-    throw new HttpsError('failed-precondition', 'Please verify your Google account again, then retry.');
-  }
-
+  // The authenticated caller can only revoke their own UID; no recent-login popup is required.
   const uid = request.auth.uid;
   try {
     const auth = getAuth();
